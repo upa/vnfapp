@@ -18,6 +18,7 @@
 struct mapping **inner_table;
 struct mapping **outer_table;
 struct mapping *mapping_table;
+pthread_mutex_t mapping_mutex;
 int syslog_facility = SYSLOG_FACILITY;
 
 static void syslog_open();
@@ -234,6 +235,7 @@ main (int argc, char ** argv)
 	}
 
 	mapping_table = init_mapping_table();
+	pthread_mutex_init(&mapping_mutex, NULL);
 
 	rq = nm_get_ring_num (rif, NM_DIR_RX);
 	lq = nm_get_ring_num (lif, NM_DIR_RX);
@@ -283,7 +285,10 @@ main (int argc, char ** argv)
 
 	while(1){
 		sleep(SESSION_CHECK_INTERVAL);
+
+		pthread_mutex_lock(&mapping_mutex);
 		count_down_ttl();
+		pthread_mutex_unlock(&mapping_mutex);
 	}
 	
 	return 0;

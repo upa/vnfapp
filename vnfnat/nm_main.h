@@ -7,6 +7,7 @@
 extern struct mapping **inner_table;
 extern struct mapping **outer_table;
 extern struct mapping *mapping_table;
+extern pthread_mutex_t mapping_mutex;
 
 struct vnfapp {
 	pthread_t tid;

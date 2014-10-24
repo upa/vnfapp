@@ -27,6 +27,8 @@ static unsigned short ip_checksum(unsigned short *buf, int size);
 int process_right_to_left(void *buf, unsigned int len){
 	struct mapping *result;
 
+	pthread_mutex_lock(&mapping_mutex);
+
 	result = search_mapping_table_outer(ip->ip_dst, dest_port);
 	if(result == NULL)
 		return -1;
@@ -34,13 +36,17 @@ int process_right_to_left(void *buf, unsigned int len){
 	reset_ttl(result);
 	process_nat_g2p(result, buf, len);
 
+	pthread_mutex_unlock(&mapping_mutex);
+
 	return 0;
 }
 
 int process_left_to_right(void *buf, unsigned int len){
 	struct mapping *result;
-	result = search_mapping_table_inner(ip->ip_src, source_port)
 
+	pthread_mutex_lock(&mapping_mutex);
+	
+	result = search_mapping_table_inner(ip->ip_src, source_port)
 	if(result == NULL){
 		result = (struct mapping *)malloc(sizeof(struct mapping));
 		memset(result, 0, sizeof(struct mapping));
@@ -57,6 +63,8 @@ int process_left_to_right(void *buf, unsigned int len){
 		reset_ttl(result);
 		process_nat_p2g(result, buf, len);
 	}
+
+	pthread_mutex_unlock(&mapping_mutex);
 
 	return 0;
 }
