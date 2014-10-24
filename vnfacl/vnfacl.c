@@ -1,5 +1,5 @@
 
-/* Application VNF L2 Hub */
+/* Application VNF Access Controll */
 
 
 #include <stdio.h>
@@ -19,6 +19,7 @@
 #include <netinet/ip.h>
 #include <pthread.h>
 
+#include "patricia.h"
 
 #define NM_DIR_TX	0
 #define NM_DIR_RX	1
@@ -27,6 +28,34 @@
 #define BURST_MAX	1024
 
 int verbose;
+patricia_tree_t * tree;
+
+struct vnfin {
+        int dir;
+        u_int8_t lmac[ETH_ALEN];
+        u_int8_t rmac[ETH_ALEN];
+};
+
+
+#define SET_R2L(v) ((v)->dir = 0)
+#define SET_L2R(v) ((v)->dir = 1)
+#define IS_R2L(v) ((v)->dir == 0)
+#define IS_L2R(v) ((v)->dir == 1)
+
+#define INMAC(v) (((v)->dir == 0) ? (v)->rmac : (v)->lmac)
+
+#define OUTDSTMAC(v) (((v)->dir == 1) ? (v)->rmac : (v)->lmac)
+
+
+#define MACCOPY(s, d)                                   \
+        do {                                            \
+		d[0] = s[0]; d[1] = s[1]; d[2] = s[2];  \
+		d[3] = s[3]; d[4] = s[4]; d[5] = s[5];  \
+        } while (0)
+
+
+#define ADDR4COPY(s, d) *(((u_int32_t *)(d))) = *(((u_int32_t *)(s)))
+#define ADDRCMP(s, d) (*(((u_int32_t *)(d))) == *(((u_int32_t *)(s))))
 
 
 
@@ -42,11 +71,105 @@ struct vnfapp {
 };
 
 
+static int
+split_prefixlen (char * str, void * prefix, __u8 * length)
+{
+        int n, len, family;
+        char * p, * pp, * lp, addrbuf[64];
+
+        p = pp = addrbuf;
+        strncpy (addrbuf, str, sizeof (addrbuf));
+
+        for (n = 0; n < strlen (addrbuf); n++) {
+                if (*(p + n) == '/') {
+                        *(p + n) = '\0';
+                        lp = p + n + 1;
+                }
+        }
+
+        len = atoi (lp);
+
+        if (inet_pton (AF_INET, pp, prefix) > 0) {
+                family = AF_INET;
+                if (len > 32)
+                        return 0;
+
+        } else if (inet_pton (AF_INET6, pp, prefix) > 0) {
+                family = AF_INET6;
+                if (len > 128)
+                        return 0;
+        } else {
+                return 0;
+        }
+
+        *length = len;
+
+        return family;
+}
+
+
+static inline void
+dst2prefix (void * addr, u_int16_t len, prefix_t * prefix)
+{
+        prefix->family = AF_INET;
+        prefix->bitlen = len;
+        prefix->ref_count = 1;
+
+	ADDR4COPY (addr, &prefix->add);
+
+        return;
+}
+
+static inline void *
+find_patricia_entry (patricia_tree_t * tree, void * addr, u_int16_t len)
+{
+	prefix_t prefix;
+	patricia_node_t * pn;
+
+	dst2prefix (addr, len, &prefix);
+
+	pn = patricia_search_best (tree, &prefix);
+
+	if (pn)
+		return pn->data;
+
+	return NULL;
+}
+
+static inline void
+add_patricia_entry (patricia_tree_t * tree, void * addr, u_int16_t len,
+		    void * data)
+{
+	prefix_t * prefix;
+	patricia_node_t * pn;
+
+	prefix = (prefix_t *) malloc (sizeof (prefix_t));
+
+	dst2prefix (addr, len, prefix);
+
+	pn = patricia_lookup (tree, prefix);
+	
+	if (pn->data != NULL) {
+		D ("duplicated entry %s/%d",
+		   inet_ntoa (*((struct in_addr *)addr)), len);
+	}
+
+	pn->data = data;
+
+	return;
+}
+
+
+
+
 u_int
 move (struct vnfapp * va)
 {
 	u_int burst, m, idx, j, k;
+	struct vnfin * v = va->data;
 	struct netmap_slot * rx_slot, * tx_slot;
+	struct ether_header * eth;
+	struct ip * ip;
 
 	j = va->rx_ring->cur;
 	k = va->tx_ring->cur;
@@ -74,7 +197,23 @@ move (struct vnfapp * va)
 			  j, rx_slot->buf_idx, k, tx_slot->buf_idx);
                         sleep(2);
                 }
+
+		eth = (struct ether_header *)
+			NETMAP_BUF (va->rx_ring, rx_slot->buf_idx);
+		ip = (struct ip *) (eth + 1);
+
+		/* drop acl check */
+		if (find_patricia_entry (tree, &ip->ip_dst, 32)) {
+			goto drop;
+		}
+
 		
+		/* change destination mac */
+		eth = (struct ether_header *)
+			NETMAP_BUF (va->rx_ring, rx_slot->buf_idx);
+
+		MACCOPY (OUTDSTMAC(v), eth->ether_dhost);
+
 		idx = tx_slot->buf_idx;
 		tx_slot->buf_idx = rx_slot->buf_idx;
 		rx_slot->buf_idx = idx;
@@ -82,6 +221,7 @@ move (struct vnfapp * va)
 		rx_slot->flags |= NS_BUF_CHANGED;
 		tx_slot->len = rx_slot->len;
 
+	drop:
 		j = nm_ring_next (va->rx_ring, j);
 		k = nm_ring_next (va->tx_ring, k);
 	}
@@ -224,6 +364,8 @@ nm_ring (char * ifname, int q, struct netmap_ring ** ring,  int x, int w)
 void
 usage (void) {
 	printf ("-l [LEFT] -r [RIGHT] -q [CPUNUM] (-v)\n");
+	printf ("-L [LEFTOUTMAC] -R[RIGHTOUTMAC]\n");
+	printf ("-a [PREFIX/LEN] -a ... -a ...\n");
 
 	return;
 }
@@ -233,14 +375,21 @@ usage (void) {
 int
 main (int argc, char ** argv)
 {
-	int q, rq, lq, n, ch;
+	int ret, q, rq, lq, n, ch, mac[ETH_ALEN];
 	char * rif, * lif;	/* right/left interfaces */
+	struct vnfin vi;
+	struct in_addr acladdr;
+	__u8 len;
 
 	q = 256;	/* all CPUs */
 	rif = lif = NULL;
 	verbose = 0;
 
-	while ((ch = getopt (argc, argv, "r:l:q:")) != -1) {
+	tree = New_Patricia (32);
+
+	memset (&vi, 0, sizeof (vi));
+
+	while ((ch = getopt (argc, argv, "r:l:q:R:L:a:")) != -1) {
 		switch (ch) {
 		case 'r' :
 			rif = optarg;
@@ -254,6 +403,28 @@ main (int argc, char ** argv)
 		case 'v' :
 			verbose = 1;
 			break;
+		case 'L' :
+			sscanf (optarg, "%02x:%02x:%02x:%02x:%02x:%02x", 
+				&mac[0], &mac[1], &mac[2],
+				&mac[3], &mac[4], &mac[5]);
+			MACCOPY (mac, vi.lmac);
+			break;
+		case 'R' :
+			sscanf (optarg, "%02x:%02x:%02x:%02x:%02x:%02x", 
+				&mac[0], &mac[1], &mac[2],
+				&mac[3], &mac[4], &mac[5]);
+			MACCOPY (mac, vi.rmac);
+			break;
+		case 'a' :
+			D ("install ACL Entry %s", optarg);
+			ret = split_prefixlen (optarg, &acladdr, &len);
+			if (!ret) {
+				D ("invalid prefix %s\n", optarg);
+				return -1;
+			}
+			add_patricia_entry (tree, &acladdr, len, main);
+			break;
+			
 		default :
 			usage ();
 			return -1;
@@ -273,6 +444,12 @@ main (int argc, char ** argv)
 		return -1;
 	}
 	D ("rq=%d, lq=%d", rq, lq);
+	D ("Change Mac Left %02x:%02x:%02x:%02x:%02x:%02x <-> "
+	   "%02x:%02x:%02x:%02x:%02x:%02x",
+	   vi.lmac[0], vi.lmac[1], vi.lmac[2], 
+	   vi.lmac[3], vi.lmac[4], vi.lmac[5],
+	   vi.rmac[0], vi.rmac[1], vi.rmac[2], 
+	   vi.rmac[3], vi.rmac[4], vi.rmac[5]);
 
 	/* asign processing threads */
 
@@ -285,6 +462,12 @@ main (int argc, char ** argv)
 		va = (struct vnfapp *) malloc (sizeof (struct vnfapp));
 		memset (va, 0, sizeof (struct vnfapp));
 
+		struct vnfin * v;
+		v = (struct vnfin *) malloc (sizeof (struct vnfin));
+		memcpy (v, &vi, sizeof (struct vnfin));
+
+		SET_R2L (v);
+		va->data = v;
 		va->rx_q = n;
 		va->tx_q = n % lq;
 		va->rx_if = rif;
@@ -301,6 +484,12 @@ main (int argc, char ** argv)
 		va = (struct vnfapp *) malloc (sizeof (struct vnfapp));
 		memset (va, 0, sizeof (struct vnfapp));
 
+		struct vnfin * v;
+		v = (struct vnfin *) malloc (sizeof (struct vnfin));
+		memcpy (v, &vi, sizeof (struct vnfin));
+
+		SET_L2R (v);
+		va->data = v;
 		va->rx_q = n;
 		va->tx_q = n % rq;
 		va->rx_if = lif;

@@ -1,2 +1,6 @@
 nm_template
 nm_hub
+*.o
+*/vnfacl
+*/vnfin
+*/vnfl3

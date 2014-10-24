@@ -1,5 +1,5 @@
 
-/* Application VNF L2 Hub */
+/* Application VNF In-Out */
 
 
 #include <stdio.h>
@@ -29,6 +29,28 @@
 int verbose;
 
 
+struct vnfin {
+	int dir;
+	u_int8_t lmac[ETH_ALEN];
+	u_int8_t rmac[ETH_ALEN];
+};
+
+#define SET_R2L(v) ((v)->dir = 0)
+#define SET_L2R(v) ((v)->dir = 1)
+#define IS_R2L(v) ((v)->dir == 0)
+#define IS_L2R(v) ((v)->dir == 1)
+
+#define INMAC(v) (((v)->dir == 0) ? (v)->rmac : (v)->lmac)
+
+#define OUTDSTMAC(v) (((v)->dir == 1) ? (v)->rmac : (v)->lmac)
+
+
+#define MACCOPY(s, d)                                   \
+        do {                                            \
+		d[0] = s[0]; d[1] = s[1]; d[2] = s[2];  \
+		d[3] = s[3]; d[4] = s[4]; d[5] = s[5];  \
+        } while (0)
+
 
 struct vnfapp {
 	pthread_t tid;
@@ -46,7 +68,9 @@ u_int
 move (struct vnfapp * va)
 {
 	u_int burst, m, idx, j, k;
+	struct vnfin * v = va->data;
 	struct netmap_slot * rx_slot, * tx_slot;
+	struct ether_header * eth;
 
 	j = va->rx_ring->cur;
 	k = va->tx_ring->cur;
@@ -75,6 +99,12 @@ move (struct vnfapp * va)
                         sleep(2);
                 }
 		
+		/* change destination mac */
+		eth = (struct ether_header *)
+			NETMAP_BUF (va->rx_ring, rx_slot->buf_idx);
+
+		MACCOPY (OUTDSTMAC(v), eth->ether_dhost);
+
 		idx = tx_slot->buf_idx;
 		tx_slot->buf_idx = rx_slot->buf_idx;
 		rx_slot->buf_idx = idx;
@@ -111,6 +141,7 @@ processing_hub (struct vnfapp * va)
 
 		move (va);
 		ioctl (va->tx_fd, NIOCTXSYNC, va->tx_q);
+		ioctl (va->tx_fd, NIOCRXSYNC, va->tx_q);
 
 	}
 
@@ -224,6 +255,7 @@ nm_ring (char * ifname, int q, struct netmap_ring ** ring,  int x, int w)
 void
 usage (void) {
 	printf ("-l [LEFT] -r [RIGHT] -q [CPUNUM] (-v)\n");
+	printf ("-L [LEFTOUTMAC] -R[RIGHTOUTMAC]\n");
 
 	return;
 }
@@ -233,14 +265,17 @@ usage (void) {
 int
 main (int argc, char ** argv)
 {
-	int q, rq, lq, n, ch;
+	int q, rq, lq, n, ch, mac[ETH_ALEN];
 	char * rif, * lif;	/* right/left interfaces */
+	struct vnfin vi;
 
 	q = 256;	/* all CPUs */
 	rif = lif = NULL;
 	verbose = 0;
 
-	while ((ch = getopt (argc, argv, "r:l:q:")) != -1) {
+	memset (&vi, 0, sizeof (vi));
+
+	while ((ch = getopt (argc, argv, "r:l:q:R:L:v")) != -1) {
 		switch (ch) {
 		case 'r' :
 			rif = optarg;
@@ -253,6 +288,18 @@ main (int argc, char ** argv)
 			break;
 		case 'v' :
 			verbose = 1;
+			break;
+		case 'L' :
+			sscanf (optarg, "%02x:%02x:%02x:%02x:%02x:%02x", 
+				&mac[0], &mac[1], &mac[2],
+				&mac[3], &mac[4], &mac[5]);
+			MACCOPY (mac, vi.lmac);
+			break;
+		case 'R' :
+			sscanf (optarg, "%02x:%02x:%02x:%02x:%02x:%02x", 
+				&mac[0], &mac[1], &mac[2],
+				&mac[3], &mac[4], &mac[5]);
+			MACCOPY (mac, vi.rmac);
 			break;
 		default :
 			usage ();
@@ -273,6 +320,12 @@ main (int argc, char ** argv)
 		return -1;
 	}
 	D ("rq=%d, lq=%d", rq, lq);
+	D ("Change Mac Left %02x:%02x:%02x:%02x:%02x:%02x <-> "
+	   "%02x:%02x:%02x:%02x:%02x:%02x",
+	   vi.lmac[0], vi.lmac[1], vi.lmac[2], 
+	   vi.lmac[3], vi.lmac[4], vi.lmac[5],
+	   vi.rmac[0], vi.rmac[1], vi.rmac[2], 
+	   vi.rmac[3], vi.rmac[4], vi.rmac[5]);
 
 	/* asign processing threads */
 
@@ -285,6 +338,12 @@ main (int argc, char ** argv)
 		va = (struct vnfapp *) malloc (sizeof (struct vnfapp));
 		memset (va, 0, sizeof (struct vnfapp));
 
+		struct vnfin * v;
+		v = (struct vnfin *) malloc (sizeof (struct vnfin));
+		memcpy (v, &vi, sizeof (struct vnfin));
+
+		SET_R2L (v);
+		va->data = v;
 		va->rx_q = n;
 		va->tx_q = n % lq;
 		va->rx_if = rif;
@@ -301,6 +360,12 @@ main (int argc, char ** argv)
 		va = (struct vnfapp *) malloc (sizeof (struct vnfapp));
 		memset (va, 0, sizeof (struct vnfapp));
 
+		struct vnfin * v;
+		v = (struct vnfin *) malloc (sizeof (struct vnfin));
+		memcpy (v, &vi, sizeof (struct vnfin));
+
+		SET_L2R (v);
+		va->data = v;
 		va->rx_q = n;
 		va->tx_q = n % rq;
 		va->rx_if = lif;
