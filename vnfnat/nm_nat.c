@@ -60,8 +60,10 @@ int process_right_to_left(void *buf, unsigned int len){
 	pthread_mutex_lock(&mapping_mutex);
 
 	result = search_mapping_table_outer(ip->ip_dst, dest_port);
-	if(result == NULL)
+	if(result == NULL){
+		pthread_mutex_unlock(&mapping_mutex);
 		return -1;
+	}
 
 	reset_ttl(result);
 	process_nat_g2p(result, buf, len);
@@ -83,6 +85,7 @@ int process_left_to_right(void *buf, unsigned int len){
 		return -1;
 	}
 
+printf("here\n");
 	switch(ip->ip_p){
 	case IPPROTO_ICMP:
 		icmp = (struct icmp *)(buf + sizeof(struct ip));
@@ -100,6 +103,7 @@ int process_left_to_right(void *buf, unsigned int len){
 		return -1;
 		break;
 	}
+printf("here2\n");
 
 	pthread_mutex_lock(&mapping_mutex);
 	
@@ -112,6 +116,7 @@ int process_left_to_right(void *buf, unsigned int len){
 		result->source_addr = ip->ip_src;
 		result->source_port = source_port;
 		if(insert_new_mapping(result) < 0){
+			pthread_mutex_unlock(&mapping_mutex);
 			return -1;
 		}
 

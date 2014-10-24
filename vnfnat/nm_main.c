@@ -44,13 +44,13 @@ void nm_receive(struct vnfapp *va)
 		tx_slot = &va->tx_ring->slot[tx_cur];
 
 		if(tx_slot->buf_idx < 2 || rx_slot->buf_idx < 2){
-			printf("wrong index rx[%d] = %d -> tx[%d] = %d",
+			printf("wrong index rx[%d] = %d -> tx[%d] = %d\n",
 				rx_cur, rx_slot->buf_idx, tx_cur, tx_slot->buf_idx);
 		}
 
-		buf = NETMAP_BUF(va->rx_ring, rx_cur);
+		buf = NETMAP_BUF(va->rx_ring, rx_slot->buf_idx);
 		eth = (struct ether_header *)buf;
-		if(eth->ether_type != ETH_P_IP)
+		if(eth->ether_type != htons(ETHERTYPE_IP))
 			goto packet_drop;
 
 		/* NAT related process */
@@ -106,9 +106,10 @@ void *process_netmap(void * param)
 	while(1){
 		poll(x, 1, -1);
 		nm_receive(va);
+		ioctl (va->tx_fd, NIOCTXSYNC, va->tx_q);
 	}
 
-	printf("rxfd=%d, txfd=%d, rxq=%d, txq=%d, rxif=%s, txif=%s",
+	printf("rxfd=%d, txfd=%d, rxq=%d, txq=%d, rxif=%s, txif=%s\n",
 	   va->rx_fd, va->tx_fd, va->rx_q, va->tx_q, va->rx_if, va->tx_if);
 
 	return NULL;
@@ -131,7 +132,7 @@ nm_get_ring_num (char * ifname, int direct)
 	nmr.nr_version = NETMAP_API;
 	strncpy (nmr.nr_name, ifname, IFNAMSIZ - 1);
 	if (ioctl (fd, NIOCGINFO, &nmr)) {
-		D ("unable to get interface info for %s", ifname);
+		printf("unable to get interface info for %s\n", ifname);
 		return -1;
 	}
 
@@ -158,25 +159,29 @@ nm_ring (char * ifname, int q, struct netmap_ring ** ring,  int x, int w)
 
 	fd = open ("/dev/netmap", O_RDWR);
 	if (fd < 0) {
-		D ("unable to open /dev/netmap");
+		printf("unable to open /dev/netmap\n");
 		return -1;
 	}
 
 	memset (&nmr, 0, sizeof (nmr));
 	strcpy (nmr.nr_name, ifname);
 	nmr.nr_version = NETMAP_API;
-	nmr.nr_ringid = (q | w);
-	nmr.nr_flags |= NR_REG_ALL_NIC;
+	nmr.nr_ringid = q | (NETMAP_NO_TX_POLL | NETMAP_DO_RX_POLL);
+
+	if (w)
+		nmr.nr_flags |= NR_REG_ONE_NIC;
+	else
+		nmr.nr_flags |= NR_REG_ALL_NIC;
 
 	if (ioctl (fd, NIOCREGIF, &nmr) < 0) {
-		D ("unable to register interface %s", ifname);
+		printf("unable to register interface %s\n", ifname);
 		return -1;
 	}
 
 	mem = mmap (NULL, nmr.nr_memsize,
 		    PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0);
 	if (mem == MAP_FAILED) {
-		D ("unable to mmap");
+		printf("unable to mmap\n");
 		return -1;
 	}
 
@@ -209,7 +214,7 @@ int
 main (int argc, char ** argv)
 {
 	int q, rq, lq, n, ch;
-	char * rif, * lif;	/* right/left interfaces */
+	char *rif, *lif;	/* right/left interfaces */
 
 	q = 256;	/* all CPUs */
 	rif = lif = NULL;
@@ -246,7 +251,7 @@ main (int argc, char ** argv)
 		printf("failed to get ring number");
 		return -1;
 	}
-	printf("rq=%d, lq=%d", rq, lq);
+	printf("rq=%d, lq=%d\n", rq, lq);
 
 	/* asign processing threads */
 
@@ -258,7 +263,7 @@ main (int argc, char ** argv)
 		struct vnfapp *va = (struct vnfapp *)malloc(sizeof (struct vnfapp));
 		memset (va, 0, sizeof (struct vnfapp));
 
-		va->rx_q = rq;
+		va->rx_q = n;
 		va->tx_q = n % lq;
 		va->rx_if = rif;
 		va->tx_if = lif;
@@ -274,7 +279,7 @@ main (int argc, char ** argv)
 		struct vnfapp *va = (struct vnfapp *) malloc (sizeof (struct vnfapp));
 		memset (va, 0, sizeof (struct vnfapp));
 
-		va->rx_q = lq;
+		va->rx_q = n;
 		va->tx_q = n % rq;
 		va->rx_if = lif;
 		va->tx_if = rif;
