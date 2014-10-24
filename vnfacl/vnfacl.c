@@ -27,6 +27,8 @@
 #define POLL_TIMEOUT	10
 #define BURST_MAX	1024
 
+#define VALE_RINGS	4
+
 int verbose;
 patricia_tree_t * tree;
 
@@ -291,6 +293,12 @@ nm_get_ring_num (char * ifname, int direct)
 	memset (&nmr, 0, sizeof (nmr));
 	nmr.nr_version = NETMAP_API;
 	strncpy (nmr.nr_name, ifname, IFNAMSIZ - 1);
+
+        if (VALE_RINGS && strncmp (ifname, "vale", 4) == 0) {
+                nmr.nr_rx_rings = VALE_RINGS;
+                nmr.nr_tx_rings = VALE_RINGS;
+        }
+
 	if (ioctl (fd, NIOCGINFO, &nmr)) {
 		D ("unable to get interface info for %s", ifname);
 		return -1;
@@ -332,6 +340,11 @@ nm_ring (char * ifname, int q, struct netmap_ring ** ring,  int x, int w)
 		nmr.nr_flags |= NR_REG_ONE_NIC;
 	else 
 		nmr.nr_flags |= NR_REG_ALL_NIC;
+
+        if (VALE_RINGS && strncmp (ifname, "vale", 4) == 0) {
+                nmr.nr_rx_rings = VALE_RINGS;
+                nmr.nr_tx_rings = VALE_RINGS;
+        }
 
 	if (ioctl (fd, NIOCREGIF, &nmr) < 0) {
 		D ("unable to register interface %s", ifname);
