@@ -6,9 +6,12 @@ PROGS = vnf-nat
 
 all: $(PROGS)
 
+clean :
+	rm -f $(PROGS)
+	rm -f *.o
+
 vnf-nat: nm_main.o nm_nat.o nm_session.o
 	$(CC) $(OPTIONS) -o $@ nm_main.o nm_nat.o nm_session.o -l pthread
-	rm *.o
 
 nm_main.o : nm_main.c
 	$(CC) $(OPTIONS) -c nm_main.c

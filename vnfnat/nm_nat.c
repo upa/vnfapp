@@ -30,6 +30,32 @@ static unsigned short ip_checksum(unsigned short *buf, int size);
 int process_right_to_left(void *buf, unsigned int len){
 	struct mapping *result;
 	struct ip *ip = (struct ip *)buf;
+	struct icmp *icmp;
+	struct tcphdr *tcp;
+	struct udphdr *udp;
+	uint16_t dest_port = 0;
+
+	if((ip->ip_off & htons(IP_MF)) || (ip->ip_off & htons(IP_OFFMASK))){
+		return -1;
+	}
+
+	switch(ip->ip_p){
+	case IPPROTO_ICMP:
+		icmp = (struct icmp *)(buf + sizeof(struct ip));
+                dest_port = icmp->icmp_id;
+		break;
+	case IPPROTO_TCP:
+		tcp = (struct tcphdr *)(buf + sizeof(struct ip));
+		dest_port = tcp->dest;
+		break;
+	case IPPROTO_UDP:
+		udp = (struct udphdr *)(buf + sizeof(struct ip));
+                dest_port = udp->dest;
+		break;
+	default:
+		return -1;
+		break;
+	}
 
 	pthread_mutex_lock(&mapping_mutex);
 
@@ -48,6 +74,32 @@ int process_right_to_left(void *buf, unsigned int len){
 int process_left_to_right(void *buf, unsigned int len){
 	struct mapping *result;
 	struct ip *ip = (struct ip *)buf;
+	struct icmp *icmp;
+	struct tcphdr *tcp;
+	struct udphdr *udp;
+	uint16_t source_port = 0;
+
+	if((ip->ip_off & htons(IP_MF)) || (ip->ip_off & htons(IP_OFFMASK))){
+		return -1;
+	}
+
+	switch(ip->ip_p){
+	case IPPROTO_ICMP:
+		icmp = (struct icmp *)(buf + sizeof(struct ip));
+		source_port = icmp->icmp_id;
+		break;
+	case IPPROTO_TCP:
+		tcp = (struct tcphdr *)(buf + sizeof(struct ip));
+		source_port = tcp->source;
+		break;
+	case IPPROTO_UDP:
+		udp = (struct udphdr *)(buf + sizeof(struct ip));
+		source_port = udp->source;
+		break;
+	default:
+		return -1;
+		break;
+	}
 
 	pthread_mutex_lock(&mapping_mutex);
 	
@@ -60,7 +112,7 @@ int process_left_to_right(void *buf, unsigned int len){
 		result->source_addr = ip->ip_src;
 		result->source_port = source_port;
 		if(insert_new_mapping(result) < 0){
-			return;
+			return -1;
 		}
 
 		process_nat_p2g(result, buf, len);
@@ -82,26 +134,31 @@ static void process_nat_p2g(struct mapping *result, char *buf, int len){
 
 	ip->ip_src = result->mapped_addr;
 
-        if(ip->ip_p == IPPROTO_ICMP){
+	switch(ip->ip_p){
+	case IPPROTO_ICMP:
                 icmp = (struct icmp *)(buf + sizeof(struct ip));
                 icmp->icmp_id = result->mapped_port;
 		icmp->icmp_cksum = 0;
 		icmp->icmp_cksum = ip_checksum((unsigned short *)icmp,
 				len - sizeof(struct ip));
-        }else if(ip->ip_p == IPPROTO_TCP){
+		break;
+	case IPPROTO_TCP:
                 tcp = (struct tcphdr *)(buf + sizeof(struct ip));
                 tcp->source = result->mapped_port;
 		tcp->check = 0;
 		tcp->check = ip4_transport_checksum(ip,
 				(unsigned short *)tcp, len - sizeof(struct ip));
-        }else if(ip->ip_p == IPPROTO_UDP){
+		break;
+	case IPPROTO_UDP:
                 udp = (struct udphdr *)(buf + sizeof(struct ip));
                 udp->source = result->mapped_port;
 		udp->check = 0;
-		tcp->check = ip4_transport_checksum(ip,
+		udp->check = ip4_transport_checksum(ip,
 				(unsigned short *)udp, len - sizeof(struct ip));
-        }else{
+		break;
+	default:
                 return;
+		break;
         }
 
 	ip->ip_sum = 0;
@@ -118,27 +175,32 @@ static void process_nat_g2p(struct mapping *result, char *buf, int len){
 
 	ip->ip_dst = result->source_addr;
 
-        if(ip->ip_p == IPPROTO_ICMP){
+	switch(ip->ip_p){
+	case IPPROTO_ICMP:
                 icmp = (struct icmp *)(buf + sizeof(struct ip));
                 icmp->icmp_id = result->source_port;
 		icmp->icmp_cksum = 0;
 		icmp->icmp_cksum = ip_checksum((unsigned short *)icmp,
 				len - sizeof(struct ip));
-        }else if(ip->ip_p == IPPROTO_TCP){
+		break;
+	case IPPROTO_TCP:
                 tcp = (struct tcphdr *)(buf + sizeof(struct ip));
                 tcp->dest = result->source_port;
 		tcp->check = 0;
 		tcp->check = ip4_transport_checksum(ip,
 				(unsigned short *)tcp, len - sizeof(struct ip));
-        }else if(ip->ip_p == IPPROTO_UDP){
+		break;
+	case IPPROTO_UDP:
                 udp = (struct udphdr *)(buf + sizeof(struct ip));
                 udp->dest = result->source_port;
 		udp->check = 0;
-		tcp->check = ip4_transport_checksum(ip,
+		udp->check = ip4_transport_checksum(ip,
 				(unsigned short *)udp, len - sizeof(struct ip));
-        }else{
+		break;
+	default:
                 return;
-        }
+		break;
+	}
 
 	ip->ip_sum = 0;
 	ip->ip_sum = ip_checksum((unsigned short *)ip, sizeof(struct ip));

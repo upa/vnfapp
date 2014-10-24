@@ -10,6 +10,8 @@
 #include <arpa/inet.h>
 #include <syslog.h>
 
+#include "nm_main.h"
+#include "nm_nat.h"
 #include "nm_session.h"
 
 static uint32_t create_table_key(void *address, uint16_t port);
@@ -181,20 +183,17 @@ static struct in_addr select_mapped_addr(void *source_addr,
 	uint16_t source_port)
 {
         struct in_addr *ip = (struct in_addr *)source_addr;
-	struct in_addr result = config.v4_rule_addr;
-	uint32_t v4_suffix = config.ea;
+	struct in_addr result;
         uint32_t sum = ip->s_addr + source_port;
 	int range;
 	int i;
 
-	v4_suffix = v4_suffix >> config.psid_len;
-	v4_suffix = v4_suffix << 32 - (config.v4_rule_prefix + config.v4_suffix_len);
+	inet_pton(AF_INET, NAT_ADDRESS, &result);
 
-	for(i = 0, range = 1; i < 32 - (config.v4_rule_prefix + config.v4_suffix_len); i++){
+	for(i = 0, range = 1; i < 32 - NAT_PREFIX; i++){
 		range *= 2;
 	}
 
-	*(uint32_t *)&result.s_addr |= htonl(v4_suffix);
 	*(uint32_t *)&result.s_addr |= htonl(sum % range);
 	
         return result;
@@ -203,25 +202,14 @@ static struct in_addr select_mapped_addr(void *source_addr,
 static uint16_t select_restricted_port(struct in_addr mapped_addr,
 	void *source_addr, uint16_t source_port)
 {
-	struct mapping *ptr = (struct mapping *)mapping_table;
 	struct in_addr *ip = (struct in_addr *)source_addr;
-	uint16_t psid = (uint16_t)(config.ea);
 	uint16_t result;
 	uint32_t sum = ip->s_addr + source_port;
-	int range;
+	int range = NAT_PORT_MAX - NAT_PORT_MIN;
 	int count = 0;
-	int i;
-
-	psid = psid << (16 - config.psid_len);
-	psid = psid >> (config.a_bits);
-	psid |= 1 << (16 - config.a_bits);
-
-        for(i = 0, range = 1; i < 16 - (config.a_bits + config.psid_len); i++){
-                range *= 2;
-        }
 
 	while(1){
-		result = htons(psid | (sum + count) % range);
+		result = htons(((sum + count) % range) + NAT_PORT_MIN);
 		if(search_mapping_table_outer(mapped_addr, result) == NULL){
 			return result;
 		}
@@ -273,8 +261,9 @@ int insert_new_mapping(struct mapping *result){
 
 }
 
-void *reset_ttl(struct mapping *target){
+void reset_ttl(struct mapping *target){
 	target->ttl = SESSION_TTL;
+	return;
 }
 
 void count_down_ttl(){
