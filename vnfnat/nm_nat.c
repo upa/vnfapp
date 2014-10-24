@@ -21,8 +21,8 @@
 #include "nm_nat.h"
 #include "nm_session.h"
 
-static void process_nat_p2g(struct mapping *result, char *buf, int len);
-static void process_nat_g2p(struct mapping *result, char *buf, int len);
+static void process_nat_p2g(struct mapping *result, void *buf, int len);
+static void process_nat_g2p(struct mapping *result, void *buf, int len);
 static unsigned short ip4_transport_checksum(struct ip *ip,
 			unsigned short *payload, int payloadsize);
 static unsigned short ip_checksum(unsigned short *buf, int size);
@@ -85,7 +85,6 @@ int process_left_to_right(void *buf, unsigned int len){
 		return -1;
 	}
 
-printf("here\n");
 	switch(ip->ip_p){
 	case IPPROTO_ICMP:
 		icmp = (struct icmp *)(buf + sizeof(struct ip));
@@ -103,7 +102,6 @@ printf("here\n");
 		return -1;
 		break;
 	}
-printf("here2\n");
 
 	pthread_mutex_lock(&mapping_mutex);
 	
@@ -127,12 +125,11 @@ printf("here2\n");
 	}
 
 	pthread_mutex_unlock(&mapping_mutex);
-printf("here4\n");
 
 	return 0;
 }
 
-static void process_nat_p2g(struct mapping *result, char *buf, int len){
+static void process_nat_p2g(struct mapping *result, void *buf, int len){
 	struct ip *ip = (struct ip *)buf;
         struct icmp *icmp;
         struct tcphdr *tcp;
@@ -173,7 +170,7 @@ static void process_nat_p2g(struct mapping *result, char *buf, int len){
 	return;
 }
 
-static void process_nat_g2p(struct mapping *result, char *buf, int len){
+static void process_nat_g2p(struct mapping *result, void *buf, int len){
 	struct ip *ip = (struct ip *)buf;
         struct icmp *icmp;
         struct tcphdr *tcp;

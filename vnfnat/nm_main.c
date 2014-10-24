@@ -30,8 +30,7 @@ void nm_receive(struct vnfapp *va)
 {
 	unsigned int budget, rx_cur, tx_cur;
 	struct netmap_slot *rx_slot, *tx_slot;
-	uint32_t temp_idx;
-	void *buf, *buf_ip;
+	void *src_buf, *dst_buf, *buf_ip;
 	struct ether_header *eth;
 	int len_ip, ret;
 
@@ -48,13 +47,15 @@ void nm_receive(struct vnfapp *va)
 				rx_cur, rx_slot->buf_idx, tx_cur, tx_slot->buf_idx);
 		}
 
-		buf = NETMAP_BUF(va->rx_ring, rx_slot->buf_idx);
-		eth = (struct ether_header *)buf;
+		src_buf = NETMAP_BUF(va->rx_ring, rx_slot->buf_idx);
+		dst_buf = NETMAP_BUF(va->tx_ring, tx_slot->buf_idx);
+		nm_pkt_copy(src_buf, dst_buf, rx_slot->len);
+		eth = (struct ether_header *)dst_buf;
 		if(eth->ether_type != htons(ETHERTYPE_IP))
 			goto packet_drop;
 
 		/* NAT related process */
-		buf_ip = (struct ip *)(buf + sizeof(struct ether_header));
+		buf_ip = (struct ip *)(dst_buf + sizeof(struct ether_header));
 		len_ip = rx_slot->len - sizeof(struct ether_header);
 		
 		switch(va->direction){
@@ -72,19 +73,20 @@ void nm_receive(struct vnfapp *va)
 		if(ret)
 			goto packet_drop;
 
-printf("here5\n");
 		/* swap the buffers */
+		/*
 		temp_idx = tx_slot->buf_idx;
 		tx_slot->buf_idx = rx_slot->buf_idx;
 		rx_slot->buf_idx = temp_idx;
+		*/
 
 		/* update length */
 		tx_slot->len = rx_slot->len;
-		rx_slot->len = 0;
+		//rx_slot->len = 0;
 
 		/* update flags */
-		tx_slot->flags = NS_BUF_CHANGED;
-		rx_slot->flags = NS_BUF_CHANGED;
+		tx_slot->flags |= NS_BUF_CHANGED;
+		//rx_slot->flags |= NS_BUF_CHANGED;
 
 packet_drop:
 		rx_cur = nm_ring_next(va->rx_ring, rx_cur);
@@ -108,6 +110,7 @@ void *process_netmap(void * param)
 		poll(x, 1, -1);
 		nm_receive(va);
 		ioctl (va->tx_fd, NIOCTXSYNC, va->tx_q);
+		//ioctl (va->rx_fd, NIOCRXSYNC, va->rx_q);
 	}
 
 	printf("rxfd=%d, txfd=%d, rxq=%d, txq=%d, rxif=%s, txif=%s\n",
@@ -314,9 +317,9 @@ void syslog_write(int level, char *fmt, ...){
 }
 
 static void syslog_open(){
-    openlog(PROCESS_NAME, LOG_CONS | LOG_PID, syslog_facility);
+	openlog(PROCESS_NAME, LOG_CONS | LOG_PID, syslog_facility);
 }
 
 static void syslog_close(){
-    closelog();
+	closelog();
 }
