@@ -167,7 +167,7 @@ add_patricia_entry (patricia_tree_t * tree, void * addr, u_int16_t len,
 u_int
 move (struct vnfapp * va)
 {
-	u_int burst, m, idx, j, k;
+	u_int burst, m, j, k;
 	struct vnfin * v = va->data;
 	struct netmap_slot * rx_slot, * tx_slot;
 	struct ether_header * eth;
@@ -210,18 +210,32 @@ move (struct vnfapp * va)
 		}
 
 		
-		/* change destination mac */
-		eth = (struct ether_header *)
-			NETMAP_BUF (va->rx_ring, rx_slot->buf_idx);
+#ifdef ZEROCPY
+                u_int idx;
+                eth = (struct ether_header *)
+		  NETMAP_BUF (va->rx_ring, rx_slot->buf_idx);
 
-		MACCOPY (OUTDSTMAC(v), eth->ether_dhost);
+                MACCOPY (OUTDSTMAC(v), eth->ether_dhost);
 
-		idx = tx_slot->buf_idx;
-		tx_slot->buf_idx = rx_slot->buf_idx;
-		rx_slot->buf_idx = idx;
-		tx_slot->flags |= NS_BUF_CHANGED;
-		rx_slot->flags |= NS_BUF_CHANGED;
-		tx_slot->len = rx_slot->len;
+                idx = tx_slot->buf_idx;
+                tx_slot->buf_idx = rx_slot->buf_idx;
+                rx_slot->buf_idx = idx;
+                tx_slot->flags |= NS_BUF_CHANGED;
+                rx_slot->flags |= NS_BUF_CHANGED;
+                tx_slot->len = rx_slot->len;
+
+#else
+                char * spkt = NETMAP_BUF (va->rx_ring, rx_slot->buf_idx);
+                char * dpkt = NETMAP_BUF (va->tx_ring, tx_slot->buf_idx);
+                nm_pkt_copy (spkt, dpkt, rx_slot->len);
+
+                /* change destination mac */
+                eth = (struct ether_header *) dpkt;
+                MACCOPY (OUTDSTMAC(v), eth->ether_dhost);
+                tx_slot->len = rx_slot->len;
+#endif
+
+
 
 	drop:
 		j = nm_ring_next (va->rx_ring, j);

@@ -26,6 +26,12 @@ int syslog_facility = SYSLOG_FACILITY;
 static void syslog_open();
 static void syslog_close();
 
+#define MACCOPY(s, d)                                   \
+        do {                                            \
+		d[0] = s[0]; d[1] = s[1]; d[2] = s[2];  \
+		d[3] = s[3]; d[4] = s[4]; d[5] = s[5];  \
+        } while (0)
+
 void nm_receive(struct vnfapp *va)
 {
 	unsigned int budget, rx_cur, tx_cur;
@@ -33,6 +39,7 @@ void nm_receive(struct vnfapp *va)
 	void *src_buf, *dst_buf, *buf_ip;
 	struct ether_header *eth;
 	int len_ip, ret;
+	struct vnfin * v = va->data;
 
 	rx_cur = va->rx_ring->cur;
 	tx_cur = va->tx_ring->cur;
@@ -72,6 +79,8 @@ void nm_receive(struct vnfapp *va)
 		/* maybe NATed session is not found */
 		if(ret)
 			goto packet_drop;
+
+		MACCOPY (OUTDSTMAC(v), eth->ether_dhost);
 
 		/* swap the buffers */
 		/*
@@ -208,6 +217,7 @@ nm_ring (char * ifname, int q, struct netmap_ring ** ring,  int x, int w)
 void
 usage (void) {
 	printf ("-l [LEFT] -r [RIGHT] -q [CPUNUM]\n");
+	printf ("-L [LEFTMAC] -R [RIGHTMAC]\n");
 
 	return;
 }
@@ -217,13 +227,16 @@ usage (void) {
 int
 main (int argc, char ** argv)
 {
-	int q, rq, lq, n, ch;
+	int q, rq, lq, n, ch, mac[ETH_ALEN];
 	char *rif, *lif;	/* right/left interfaces */
+	struct vnfin vi;
 
 	q = 256;	/* all CPUs */
 	rif = lif = NULL;
 
-	while ((ch = getopt (argc, argv, "r:l:q:")) != -1) {
+	memset (&vi, 0, sizeof (vi));
+
+	while ((ch = getopt (argc, argv, "r:l:q:L:R:")) != -1) {
 		switch (ch) {
 		case 'r' :
 			rif = optarg;
@@ -234,6 +247,18 @@ main (int argc, char ** argv)
 		case 'q' :
 			q = atoi (optarg);
 			break;
+                case 'L' :
+                        sscanf (optarg, "%02x:%02x:%02x:%02x:%02x:%02x",
+                                &mac[0], &mac[1], &mac[2],
+                                &mac[3], &mac[4], &mac[5]);
+                        MACCOPY (mac, vi.lmac);
+                        break;
+                case 'R' :
+                        sscanf (optarg, "%02x:%02x:%02x:%02x:%02x:%02x",
+                                &mac[0], &mac[1], &mac[2],
+                                &mac[3], &mac[4], &mac[5]);
+                        MACCOPY (mac, vi.rmac);
+                        break;
 		default :
 			usage ();
 			return -1;
@@ -266,7 +291,13 @@ main (int argc, char ** argv)
 	for (n = 0; n < rq; n++) {
 		struct vnfapp *va = (struct vnfapp *)malloc(sizeof (struct vnfapp));
 		memset (va, 0, sizeof (struct vnfapp));
-
+		
+		struct vnfin * v;
+		v = (struct vnfin *) malloc (sizeof (struct vnfin));
+		memcpy (v, &vi, sizeof (struct vnfin));
+		SET_R2L (v);
+		
+		va->data = v;
 		va->rx_q = n;
 		va->tx_q = n % lq;
 		va->rx_if = rif;
@@ -283,6 +314,12 @@ main (int argc, char ** argv)
 		struct vnfapp *va = (struct vnfapp *) malloc (sizeof (struct vnfapp));
 		memset (va, 0, sizeof (struct vnfapp));
 
+		struct vnfin * v;
+		v = (struct vnfin *) malloc (sizeof (struct vnfin));
+		memcpy (v, &vi, sizeof (struct vnfin));
+		SET_L2R (v);
+		
+		va->data = v;
 		va->rx_q = n;
 		va->tx_q = n % rq;
 		va->rx_if = lif;

@@ -24,4 +24,17 @@ struct vnfapp {
 	void *data;
 };
 
+struct vnfin {
+	int dir;
+	u_int8_t lmac[ETH_ALEN];
+	u_int8_t rmac[ETH_ALEN];
+};
+#define SET_R2L(v) ((v)->dir = 0)
+#define SET_L2R(v) ((v)->dir = 1)
+#define IS_R2L(v) ((v)->dir == 0)
+#define IS_L2R(v) ((v)->dir == 1)
+#define INMAC(v) (((v)->dir == 0) ? (v)->rmac : (v)->lmac)
+#define OUTDSTMAC(v) (((v)->dir == 1) ? (v)->rmac : (v)->lmac)
+
+
 void syslog_write(int level, char *fmt, ...);
