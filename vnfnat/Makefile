@@ -2,10 +2,10 @@
 
 
 CC = gcc -g -Wall
-PROGNAME = nm_nat
+PROGNAME = vnf-nat
 
 
 all: $(PROGNAME)
 
-nm_template: nm_nat.c
+vnf-nat: nm_main.c nm_nat.c nm_session.c
 	$(CC) $< -o $@ -lpthread
