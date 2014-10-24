@@ -127,6 +127,7 @@ printf("here2\n");
 	}
 
 	pthread_mutex_unlock(&mapping_mutex);
+printf("here4\n");
 
 	return 0;
 }

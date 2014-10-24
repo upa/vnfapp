@@ -69,9 +69,10 @@ void nm_receive(struct vnfapp *va)
 		}
 
 		/* maybe NATed session is not found */
-		if(!ret)
+		if(ret)
 			goto packet_drop;
 
+printf("here5\n");
 		/* swap the buffers */
 		temp_idx = tx_slot->buf_idx;
 		tx_slot->buf_idx = rx_slot->buf_idx;
