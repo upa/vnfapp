@@ -6,5 +6,5 @@ struct pseudo_ipv4_header{
 	uint16_t	ip_p_len;
 };
 
-void process_nat_ptog(struct mapping *result, char *buf, int len);
-void process_nat_gtop(struct mapping *result, char *buf, int len);
+int process_right_to_left(void *buf, unsigned int len);
+int process_left_to_right(void *buf, unsigned int len);

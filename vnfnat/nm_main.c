@@ -7,6 +7,8 @@
 #include <netinet/in.h>
 #include <netinet/ip.h>
 #include <pthread.h>
+#include <syslog.h>
+#include <stdarg.h>
 
 #define NETMAP_WITH_LIBS
 #include <net/netmap_user.h>
@@ -31,7 +33,6 @@ void nm_receive(struct vnfapp *va)
 	uint32_t temp_idx;
 	void *buf, *buf_ip;
 	struct ether_header *eth;
-	struct ip *ip
 	int len_ip, ret;
 
 	rx_cur = va->rx_ring->cur;
@@ -64,6 +65,7 @@ void nm_receive(struct vnfapp *va)
 			ret = process_left_to_right(buf_ip, len_ip);
 			break;
 		default:
+			break;
 		}
 
 		/* maybe NATed session is not found */
@@ -71,9 +73,9 @@ void nm_receive(struct vnfapp *va)
 			goto packet_drop;
 
 		/* swap the buffers */
-		tmp_idx = tx_slot->buf_idx;
+		temp_idx = tx_slot->buf_idx;
 		tx_slot->buf_idx = rx_slot->buf_idx;
-		rx_slot->buf_idx = tmp_idx;
+		rx_slot->buf_idx = temp_idx;
 
 		/* update length */
 		tx_slot->len = rx_slot->len;

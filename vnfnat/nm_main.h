@@ -2,6 +2,9 @@
 #define NM_DIR_RX	1
 #define NM_THREAD_R2L	0
 #define NM_THREAD_L2R	1
+#define SYSLOG_FACILITY LOG_DAEMON
+#define BUDGET_MAX	1024
+#define PROCESS_NAME	"vnf-nat"
 #define min(a, b) ((a) < (b) ? (a) : (b))
 
 extern struct mapping **inner_table;

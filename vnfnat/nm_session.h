@@ -1,5 +1,6 @@
 #define SESSION_CHECK_INTERVAL 60
 #define SESSION_TTL 10
+#define MAX_SESSION 1000
 
 struct mapping {
 	struct in_addr	mapped_addr;

@@ -15,17 +15,21 @@
 #include <netinet/ip_icmp.h>
 #include <linux/if_tun.h>
 #include <syslog.h>
+#include <pthread.h>
 
 #include "nm_main.h"
 #include "nm_nat.h"
 #include "nm_session.h"
 
+static void process_nat_p2g(struct mapping *result, char *buf, int len);
+static void process_nat_g2p(struct mapping *result, char *buf, int len);
 static unsigned short ip4_transport_checksum(struct ip *ip,
 			unsigned short *payload, int payloadsize);
 static unsigned short ip_checksum(unsigned short *buf, int size);
 
 int process_right_to_left(void *buf, unsigned int len){
 	struct mapping *result;
+	struct ip *ip = (struct ip *)buf;
 
 	pthread_mutex_lock(&mapping_mutex);
 
@@ -43,10 +47,11 @@ int process_right_to_left(void *buf, unsigned int len){
 
 int process_left_to_right(void *buf, unsigned int len){
 	struct mapping *result;
+	struct ip *ip = (struct ip *)buf;
 
 	pthread_mutex_lock(&mapping_mutex);
 	
-	result = search_mapping_table_inner(ip->ip_src, source_port)
+	result = search_mapping_table_inner(ip->ip_src, source_port);
 	if(result == NULL){
 		result = (struct mapping *)malloc(sizeof(struct mapping));
 		memset(result, 0, sizeof(struct mapping));
@@ -69,7 +74,7 @@ int process_left_to_right(void *buf, unsigned int len){
 	return 0;
 }
 
-void process_nat_p2g(struct mapping *result, char *buf, int len){
+static void process_nat_p2g(struct mapping *result, char *buf, int len){
 	struct ip *ip = (struct ip *)buf;
         struct icmp *icmp;
         struct tcphdr *tcp;
@@ -105,7 +110,7 @@ void process_nat_p2g(struct mapping *result, char *buf, int len){
 	return;
 }
 
-void process_nat_g2p(struct mapping *result, char *buf, int len){
+static void process_nat_g2p(struct mapping *result, char *buf, int len){
 	struct ip *ip = (struct ip *)buf;
         struct icmp *icmp;
         struct tcphdr *tcp;
