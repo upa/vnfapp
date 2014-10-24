@@ -79,66 +79,47 @@ struct vnfapp {
 struct aclentry {
 	int port[ACLPORT_MAX];
 	int num;
+
+	patricia_tree_t * dtree;
 };
 
 
 int
-split_prefixlenport (char * str, void * prefix,
-		     int * length, int * port, int * proto)
+split_prefixlenport (char * str, int * proto,
+		     void * sprefix, int * slen, int * sport,
+		     void * dprefix, int * dlen, int * dport)
 {
-	int n, len, family, l;
-	char * p, * pp, * lp, * np, * tp, addrbuf[64];
+	int len, n, c = 0;
+	char * p, * args[7];
 
-	strncpy (addrbuf, str, sizeof (addrbuf));
-
-	p = addrbuf;
-	pp = p;
-
-	l = strlen (addrbuf);
-
-	for (n = 0; n < l; n++) {
-		if (*(p + n) == '/') {
+	/* PROTO_PREFIX/LEN:PORT-PREFIX/LEN:PORT*/
+	
+	p = str;
+	args[c++] = str;
+	len = strlen (str);
+	for (n = 0; n < len; n++) {
+		if (*(p + n) == '_' || *(p + n) == '/' ||
+		    *(p + n) == ':' || *(p + n) == '-') {
 			*(p + n) = '\0';
-			lp = p + n + 1;
-		}
-		if (*(p + n) == ':') {
-			*(p + n) = '\0';
-			np = p + n + 1;
-		}
-		if (*(p + n) == '_') {
-			*(p + n) = '\0';
-			tp = p + n + 1;
+			args[c++] = (p + n + 1);
 		}
 	}
 
+	*slen = atoi (args[2]);
+	*dlen = atoi (args[5]);
+	*sport = atoi (args[3]);
+	*dport = atoi (args[6]);
 
-	len = atoi (lp);
-
-	if (inet_pton (AF_INET, pp, prefix) > 0) {
-		family = AF_INET;
-		if (len > 32)
-			return 0;
-
-	} else if (inet_pton (AF_INET6, pp, prefix) > 0) {
-		family = AF_INET6;
-		if (len > 128)
-			return 0;
-	} else {
-		return 0;
-	}
-
-
-
-	*length = len;
-	*port = atoi (np);
-
-	if (!strncmp (tp, "udp", 3)) {
-		*proto = IPPROTO_UDP;
-	} else if (!strncmp (tp, "tcp", 3)) {
+	inet_pton (AF_INET, args[1], sprefix);
+	inet_pton (AF_INET, args[4], dprefix);
+	
+	if (!strncmp (args[0], "tcp", 3)) {
 		*proto = IPPROTO_TCP;
+	} else if (!strncmp (args[0], "udp", 3)) {
+		*proto = IPPROTO_UDP;
 	}
 
-	return family;
+	return 1;
 }
 
 
@@ -204,8 +185,8 @@ move (struct vnfapp * va)
 	struct aclentry * acl;
 	struct udphdr * udp;
 	struct tcphdr * tcp;
-	patricia_tree_t * tree;
-	u_int16_t dp;
+	patricia_tree_t * stree, * dtree;
+	u_int16_t dp, sp;
 
 	j = va->rx_ring->cur;
 	k = va->tx_ring->cur;
@@ -225,6 +206,9 @@ move (struct vnfapp * va)
 	while (burst-- > 0) {
 		/* netmap zero copy switching */
 
+		stree = NULL;
+		dtree = NULL;
+
 		rx_slot = &va->rx_ring->slot[j];
 		tx_slot = &va->tx_ring->slot[k];
 
@@ -240,20 +224,38 @@ move (struct vnfapp * va)
 
 		/* drop acl check */
 		if (ip->ip_p == IPPROTO_UDP) {
-			tree = udp_tree;
+			stree = udp_tree;
 			udp = (struct udphdr *) (ip + 1);
-			//sp = udp->source;
+			sp = udp->source;
 			dp = udp->dest;
 		} else if (ip->ip_p == IPPROTO_TCP) {
-			tree = tcp_tree;
+			stree = tcp_tree;
 			tcp = (struct tcphdr *) (ip + 1);
-			//sp = tcp->source;
+			sp = tcp->source;
 			dp = tcp->dest;
 		}
-		if ((acl = find_patricia_entry (tree, &ip->ip_dst, 32))) {
+
+		/* source prefix and port check */
+		acl = find_patricia_entry (stree, &ip->ip_src, 32);
+		if (acl) {
 			for (n = 0; n < acl->num; n++) {
-				if (acl->port[n] == dp) {
-					goto drop;
+				if (acl->port[n] == sp ||
+				    acl->port[n] == 0) {
+					dtree = acl->dtree;
+					break;
+				}
+			}
+		}
+
+		/* destination prefix and port check */
+		if (dtree) {
+			acl = find_patricia_entry (dtree, &ip->ip_dst, 32);
+			if (acl) {
+				for (n = 0; n < acl->num; n++) {
+					if (acl->port[n] == dp ||
+					    acl->port[n] == 0) {
+						goto drop;
+					}
 				}
 			}
 		}
@@ -414,9 +416,12 @@ nm_ring (char * ifname, int q, struct netmap_ring ** ring,  int x, int w)
 
 void
 usage (void) {
-	printf ("-l [LEFT] -r [RIGHT] -q [CPUNUM] (-v)\n");
-	printf ("-L [LEFTOUTMAC] -R[RIGHTOUTMAC]\n");
-	printf ("-a [PREFIX/LEN:PORT_PROTO] -a ... -a ...\n");
+	printf ("-l [LEFT] -r [RIGHT] -q [CPUNUM] (-v)\n"
+		"-L [LEFTOUTMAC] -R[RIGHTOUTMAC]\n"
+		"-a [PROTO_PREFIX/LEN:PORT-PREFIX/LEN:PORT] -a ... -a ...\n"
+		"\n"
+		"port number 0 means all\n"
+		);
 
 	return;
 }
@@ -426,12 +431,15 @@ usage (void) {
 int
 main (int argc, char ** argv)
 {
-	int ret, q, rq, lq, n, ch, mac[ETH_ALEN], len, port, proto;
+	int ret, q, rq, lq, n, ch, mac[ETH_ALEN];
 	char * rif, * lif;	/* right/left interfaces */
-	patricia_tree_t * tree;
+	patricia_tree_t * stree, * dtree;
 	struct vnfin vi;
-	struct in_addr acladdr;
 	struct aclentry * acl;
+
+	int proto, slen, sport, dlen, dport;
+	struct in_addr sprefix, dprefix;
+
 
 	q = 256;	/* all CPUs */
 	rif = lif = NULL;
@@ -469,9 +477,13 @@ main (int argc, char ** argv)
 			MACCOPY (mac, vi.rmac);
 			break;
 		case 'a' :
+
 			D ("install ACL Entry %s", optarg);
-			ret = split_prefixlenport (optarg, &acladdr, 
-						   &len, &port, &proto);
+
+			ret = split_prefixlenport (optarg, &proto,
+						   &sprefix, &slen, &sport,
+						   &dprefix, &dlen, &dport);
+
 			if (!ret) {
 				D ("invalid prefix %s\n", optarg);
 				return -1;
@@ -479,24 +491,39 @@ main (int argc, char ** argv)
 
 			switch (proto) {
 			case IPPROTO_UDP :
-				tree = udp_tree;
+				stree = udp_tree;
 				break;
 			case IPPROTO_TCP :
-				tree = tcp_tree;
+				stree = tcp_tree;
 				break;
 			default :
 				D ("invalid protocol");
 				return -1;
 			}
 
-			acl = find_patricia_entry (tree, &acladdr, len);
+			/* install source prefix */
+			D ("%s/%d port %d", inet_ntoa (sprefix), slen, sport);
+			acl = find_patricia_entry (stree, &sprefix, slen);
+			if (!acl) {
+				acl = (struct aclentry *)
+					malloc (sizeof (struct aclentry));
+				memset (acl, 0, sizeof (struct aclentry));
+				acl->dtree = New_Patricia (32);
+			}
+			acl->port[acl->num++] = htons (sport);
+			add_patricia_entry (stree, &sprefix, slen, acl);
+
+			/* install destination prefix */
+			D ("%s/%d port %d", inet_ntoa (dprefix), dlen, dport);
+			dtree = acl->dtree;
+			acl = find_patricia_entry (dtree, &dprefix, slen);
 			if (!acl) {
 				acl = (struct aclentry *)
 					malloc (sizeof (struct aclentry));
 				memset (acl, 0, sizeof (struct aclentry));
 			}
-			acl->port[acl->num++] = htons (port);
-			add_patricia_entry (tree, &acladdr, len, acl);
+			acl->port[acl->num++] = htons (dport);
+			add_patricia_entry (dtree, &dprefix, dlen, acl);
 
 			break;
 			
