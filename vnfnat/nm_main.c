@@ -30,6 +30,7 @@ void nm_receive(struct vnfapp *va)
 	unsigned int budget, rx_cur, tx_cur;
 	struct netmap_slot *rx_slot, *tx_slot;
 	uint32_t temp_idx;
+	int ret;
 
 	rx_cur = va->rx_ring->cur;
 	tx_cur = va->tx_ring->cur;
@@ -47,10 +48,17 @@ void nm_receive(struct vnfapp *va)
 		/* NAT related process */
 		switch(va->direction){
 		case NM_THREAD_R2L:
+			ret = process_right_to_left();
+			break;
 		case NM_THREAD_L2R:
-
+			ret = process_left_to_right();
+			break;
 		default:
 		}
+
+		/* likely NATed session is not found */
+		if(!ret)
+			goto packet_drop;
 
 		/* swap the buffers */
 		tmp_idx = tx_slot->buf_idx;
@@ -65,6 +73,7 @@ void nm_receive(struct vnfapp *va)
 		tx_slot->flags = NS_BUF_CHANGED;
 		rx_slot->flags = NS_BUF_CHANGED;
 
+packet_drop:
 		rx_cur = nm_ring_next(va->rx_ring, rx_cur);
 		tx_cur = nm_ring_next(va->tx_ring, tx_cur);
 	}
