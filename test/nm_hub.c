@@ -23,6 +23,9 @@
 #define NM_DIR_TX	0
 #define NM_DIR_RX	1
 
+#define POLL_TIMEOUT	10
+#define BURST_MAX	1024
+
 struct vnfapp {
 	pthread_t tid;
 
@@ -35,11 +38,75 @@ struct vnfapp {
 };
 
 
+u_int
+move (struct vnfapp * va)
+{
+	u_int burst, m, idx, j, k;
+	struct netmap_slot * rx_slot, * tx_slot;
+
+	j = va->rx_ring->cur;
+	k = va->tx_ring->cur;
+
+	burst = BURST_MAX;
+
+	m = nm_ring_space (va->rx_ring);
+	if (m < BURST_MAX)
+		burst = m;
+
+	m = nm_ring_space (va->tx_ring);
+	if (m < burst)
+		burst = m;
+
+	m = burst;
+
+	while (burst-- > 0) {
+		/* netmap zero copy switching */
+
+		rx_slot = &va->rx_ring->slot[j];
+		tx_slot = &va->tx_ring->slot[k];
+
+                if (tx_slot->buf_idx < 2 || rx_slot->buf_idx < 2) {
+                        D("wrong index rx[%d] = %d  -> tx[%d] = %d",
+			  j, rx_slot->buf_idx, k, tx_slot->buf_idx);
+                        sleep(2);
+                }
+		
+		idx = tx_slot->buf_idx;
+		tx_slot->buf_idx = rx_slot->buf_idx;
+		rx_slot->buf_idx = idx;
+		tx_slot->flags |= NS_BUF_CHANGED;
+		rx_slot->flags |= NS_BUF_CHANGED;
+		tx_slot->len = rx_slot->len;
+
+		j = nm_ring_next (va->rx_ring, j);
+		k = nm_ring_next (va->tx_ring, k);
+	}
+
+	va->rx_ring->head = va->rx_ring->cur = j;
+	va->tx_ring->head = va->tx_ring->cur = k;
+	
+	D ("send %u packets", m);
+
+	return m;
+}
+
 void
 processing_hub (struct vnfapp * va)
 {
+	struct pollfd x[1];
+
+	x[0].fd = va->rx_fd;
+	x[0].events = POLLIN;
+
 	while (1) {
-		
+		if (poll (x, 1, 1000) == 0) {
+			D ("poll timeout");
+			continue;
+		}
+
+		move (va);
+		ioctl (va->tx_fd, NIOCTXSYNC, va->tx_q);
+		ioctl (va->tx_fd, NIOCRXSYNC, va->rx_q);
 	}
 
 	return;
@@ -52,6 +119,8 @@ processing_thread (void * param)
 
 	D ("rxfd=%d, txfd=%d, rxq=%d, txq=%d, rxif=%s, txif=%s",
 	   va->rx_fd, va->tx_fd, va->rx_q, va->tx_q, va->rx_if, va->tx_if);
+
+	pthread_detach (pthread_self ());
 
 	processing_hub (va);
 
@@ -111,7 +180,10 @@ nm_ring (char * ifname, int q, struct netmap_ring ** ring,  int x, int w)
 	strcpy (nmr.nr_name, ifname);
 	nmr.nr_version = NETMAP_API;
 	nmr.nr_ringid = (q | w);
-	nmr.nr_flags |= NR_REG_ALL_NIC;
+	if (w) 
+		nmr.nr_flags |= NR_REG_ONE_NIC;
+	else 
+		nmr.nr_flags |= NR_REG_ALL_NIC;
 
 	if (ioctl (fd, NIOCREGIF, &nmr) < 0) {
 		D ("unable to register interface %s", ifname);
@@ -230,6 +302,7 @@ main (int argc, char ** argv)
 
 	while (1)
 		sleep (100);
+
 	
 	return 0;
 }
