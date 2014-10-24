@@ -177,7 +177,7 @@ u_int
 move (struct vnfapp * va)
 {
 	int n;
-	u_int burst, m, idx, j, k;
+	u_int burst, m, j, k;
 	struct vnfin * v = va->data;
 	struct netmap_slot * rx_slot, * tx_slot;
 	struct ether_header * eth;
@@ -262,6 +262,8 @@ move (struct vnfapp * va)
 
 		
 		/* change destination mac */
+#ifdef ZEROCPY
+		u_int idx;
 		eth = (struct ether_header *)
 			NETMAP_BUF (va->rx_ring, rx_slot->buf_idx);
 
@@ -273,6 +275,18 @@ move (struct vnfapp * va)
 		tx_slot->flags |= NS_BUF_CHANGED;
 		rx_slot->flags |= NS_BUF_CHANGED;
 		tx_slot->len = rx_slot->len;
+
+#else
+                char * spkt = NETMAP_BUF (va->rx_ring, rx_slot->buf_idx);
+                char * dpkt = NETMAP_BUF (va->tx_ring, tx_slot->buf_idx);
+                nm_pkt_copy (spkt, dpkt, rx_slot->len);
+
+                /* change destination mac */
+                eth = (struct ether_header *) dpkt;
+                MACCOPY (OUTDSTMAC(v), eth->ether_dhost);
+                tx_slot->len = rx_slot->len;
+#endif
+
 
 	drop:
 		j = nm_ring_next (va->rx_ring, j);
