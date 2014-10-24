@@ -26,6 +26,10 @@
 #define POLL_TIMEOUT	10
 #define BURST_MAX	1024
 
+int verbose;
+
+
+
 struct vnfapp {
 	pthread_t tid;
 
@@ -85,7 +89,8 @@ move (struct vnfapp * va)
 	va->rx_ring->head = va->rx_ring->cur = j;
 	va->tx_ring->head = va->tx_ring->cur = k;
 	
-	D ("send %u packets", m);
+	if (verbose)
+		D ("rx queue %d send %u packets", va->rx_q, m);
 
 	return m;
 }
@@ -106,7 +111,7 @@ processing_hub (struct vnfapp * va)
 
 		move (va);
 		ioctl (va->tx_fd, NIOCTXSYNC, va->tx_q);
-		ioctl (va->tx_fd, NIOCRXSYNC, va->rx_q);
+
 	}
 
 	return;
@@ -117,8 +122,10 @@ processing_thread (void * param)
 {
 	struct vnfapp * va = (struct vnfapp *) param;
 
-	D ("rxfd=%d, txfd=%d, rxq=%d, txq=%d, rxif=%s, txif=%s",
-	   va->rx_fd, va->tx_fd, va->rx_q, va->tx_q, va->rx_if, va->tx_if);
+	D ("rxfd=%d, txfd=%d, rxq=%d, txq=%d, rxif=%s, txif=%s, "
+	   "rxring=%p, txring=%p",
+	   va->rx_fd, va->tx_fd, va->rx_q, va->tx_q, va->rx_if, va->tx_if,
+	   va->rx_ring, va->tx_ring);
 
 	pthread_detach (pthread_self ());
 
@@ -170,7 +177,7 @@ nm_ring (char * ifname, int q, struct netmap_ring ** ring,  int x, int w)
 
 	/* open netmap for  ring */
 
-	fd = open ("/dev/netmap", O_RDWR);
+ 	fd = open ("/dev/netmap", O_RDWR);
 	if (fd < 0) {
 		D ("unable to open /dev/netmap");
 		return -1;
@@ -179,7 +186,8 @@ nm_ring (char * ifname, int q, struct netmap_ring ** ring,  int x, int w)
 	memset (&nmr, 0, sizeof (nmr));
 	strcpy (nmr.nr_name, ifname);
 	nmr.nr_version = NETMAP_API;
-	nmr.nr_ringid = (q | w);
+	nmr.nr_ringid = q | (NETMAP_NO_TX_POLL | NETMAP_DO_RX_POLL);
+
 	if (w) 
 		nmr.nr_flags |= NR_REG_ONE_NIC;
 	else 
@@ -215,7 +223,7 @@ nm_ring (char * ifname, int q, struct netmap_ring ** ring,  int x, int w)
 
 void
 usage (void) {
-	printf ("-l [LEFT] -r [RIGHT] -q [CPUNUM]\n");
+	printf ("-l [LEFT] -r [RIGHT] -q [CPUNUM] (-v)\n");
 
 	return;
 }
@@ -230,6 +238,7 @@ main (int argc, char ** argv)
 
 	q = 256;	/* all CPUs */
 	rif = lif = NULL;
+	verbose = 0;
 
 	while ((ch = getopt (argc, argv, "r:l:q:")) != -1) {
 		switch (ch) {
@@ -241,6 +250,9 @@ main (int argc, char ** argv)
 			break;
 		case 'q' :
 			q = atoi (optarg);
+			break;
+		case 'v' :
+			verbose = 1;
 			break;
 		default :
 			usage ();
@@ -273,7 +285,7 @@ main (int argc, char ** argv)
 		va = (struct vnfapp *) malloc (sizeof (struct vnfapp));
 		memset (va, 0, sizeof (struct vnfapp));
 
-		va->rx_q = rq;
+		va->rx_q = n;
 		va->tx_q = n % lq;
 		va->rx_if = rif;
 		va->tx_if = lif;
@@ -289,7 +301,7 @@ main (int argc, char ** argv)
 		va = (struct vnfapp *) malloc (sizeof (struct vnfapp));
 		memset (va, 0, sizeof (struct vnfapp));
 
-		va->rx_q = lq;
+		va->rx_q = n;
 		va->tx_q = n % rq;
 		va->rx_if = lif;
 		va->tx_if = rif;
