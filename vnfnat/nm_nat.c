@@ -1,275 +1,182 @@
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <assert.h>
+#include <err.h>
 #include <unistd.h>
-#include <sys/poll.h>
+#include <sys/types.h>
+#include <sys/ioctl.h>
+#include <fcntl.h>
 #include <arpa/inet.h>
-#include <sys/sysctl.h>
-#include <net/ethernet.h>
-#include <netinet/in.h>
+#include <netinet/ip6.h>
 #include <netinet/ip.h>
-#include <pthread.h>
+#include <netinet/tcp.h>
+#include <netinet/udp.h>
+#include <netinet/ip_icmp.h>
+#include <linux/if_tun.h>
+#include <syslog.h>
 
-#define NETMAP_WITH_LIBS
-#include <net/netmap_user.h>
+#include "main.h"
+#include "session.h"
+#include "encapsulate.h"
+#include "nat.h"
 
-#include "nm_nat.h"
+static unsigned short ip4_transport_checksum(struct ip *ip,
+			unsigned short *payload, int payloadsize);
+static unsigned short ip_checksum(unsigned short *buf, int size);
 
-struct vnfapp {
-	pthread_t tid;
+void process_right_to_left(){
+	if((result =
+		search_mapping_table_outer(ip->ip_dst, dest_port)) != NULL){
+		reset_ttl(result);
+		process_nat_g2p(result,
+			buf + sizeof(struct ip6_hdr), len - sizeof(struct ip6_hdr));
+	}
+}
 
-	int rx_fd, tx_fd;
-	int rx_q, tx_q;
-	char *rx_if, *tx_if;
-	struct netmap_ring *rx_ring, *tx_ring;
-	unsigned int direction;
+void process_left_to_right(){
+	if((result =
+		search_mapping_table_inner(ip->ip_src, source_port)) != NULL){
+		reset_ttl(result);
+		process_nat_ptog(result, buf, len);
+	}else{
+		result = (struct mapping *)malloc(sizeof(struct mapping));
+		memset(result, 0, sizeof(struct mapping));
 
-	void *data;
-};
-
-void nm_receive(struct vnfapp *va)
-{
-	unsigned int budget, rx_cur, tx_cur;
-	struct netmap_slot *rx_slot, *tx_slot;
-	uint32_t temp_idx;
-
-	rx_cur = va->rx_ring->cur;
-	tx_cur = va->tx_ring->cur;
-	budget = min(BUDGET_MAX, min(nm_ring_space(va->rx_ring), nm_ring_space (va->tx_ring)));
-
-	while(budget--){
-		rx_slot = &va->rx_ring->slot[rx_cur];
-		tx_slot = &va->tx_ring->slot[tx_cur];
-
-		if(tx_slot->buf_idx < 2 || rx_slot->buf_idx < 2){
-			printf("wrong index rx[%d] = %d -> tx[%d] = %d",
-				rx_cur, rx_slot->buf_idx, tx_cur, tx_slot->buf_idx);
+		reset_ttl(result);
+		result->source_addr = ip->ip_src;
+		result->source_port = source_port;
+		if(insert_new_mapping(result) < 0){
+			return;
 		}
 
-		/* NAT related process */
-		switch(va->direction){
-		case NETMAP_NAT_G2P:
-
-		case NETMAP_NAT_P2G:
-
-		default:
-		}
-
-		/* swap the buffers */
-		tmp_idx = tx_slot->buf_idx;
-		tx_slot->buf_idx = rx_slot->buf_idx;
-		rx_slot->buf_idx = tmp_idx;
-
-		/* update length */
-		tx_slot->len = rx_slot->len;
-		rx_slot->len = 0;
-
-		/* update flags */
-		tx_slot->flags = NS_BUF_CHANGED;
-		rx_slot->flags = NS_BUF_CHANGED;
-
-		rx_cur = nm_ring_next(va->rx_ring, rx_cur);
-		tx_cur = nm_ring_next(va->tx_ring, tx_cur);
+		process_nat_p2g(result, buf, len);
 	}
-
-	/* tell the kernel to update addresses in the NIC rings */
-	va->rx_ring->head = va->rx_ring->cur = rx_cur;
-	va->tx_ring->head = va->tx_ring->cur = tx_cur;
 }
 
-void *process_netmap(void * param)
-{
-	struct vnfapp *va = (struct vnfapp *)param;
-	struct pollfd x[1];
+void process_nat_p2g(struct mapping *result, char *buf, int len){
+	struct ip *ip = (struct ip *)buf;
+        struct icmp *icmp;
+        struct tcphdr *tcp;
+        struct udphdr *udp;
 
-	x[0].fd = va->rx_fd;
-	x[0].events = POLLIN;
+	ip->ip_src = result->mapped_addr;
 
-	while(1){
-		poll(x, 1, -1);
-		nm_receive(va);
-	}
+        if(ip->ip_p == IPPROTO_ICMP){
+                icmp = (struct icmp *)(buf + sizeof(struct ip));
+                icmp->icmp_id = result->mapped_port;
+		icmp->icmp_cksum = 0;
+		icmp->icmp_cksum = ip_checksum((unsigned short *)icmp,
+				len - sizeof(struct ip));
+        }else if(ip->ip_p == IPPROTO_TCP){
+                tcp = (struct tcphdr *)(buf + sizeof(struct ip));
+                tcp->source = result->mapped_port;
+		tcp->check = 0;
+		tcp->check = ip4_transport_checksum(ip,
+				(unsigned short *)tcp, len - sizeof(struct ip));
+        }else if(ip->ip_p == IPPROTO_UDP){
+                udp = (struct udphdr *)(buf + sizeof(struct ip));
+                udp->source = result->mapped_port;
+		udp->check = 0;
+		tcp->check = ip4_transport_checksum(ip,
+				(unsigned short *)udp, len - sizeof(struct ip));
+        }else{
+                return;
+        }
 
-	printf("rxfd=%d, txfd=%d, rxq=%d, txq=%d, rxif=%s, txif=%s",
-	   va->rx_fd, va->tx_fd, va->rx_q, va->tx_q, va->rx_if, va->tx_if);
-
-	return NULL;
-}
-
-int
-nm_get_ring_num (char * ifname, int direct)
-{
-	int fd;
-	struct nmreq nmr;
-
-	fd = open ("/dev/netmap", O_RDWR);
-	if (fd < 0) {
-		D ("Unable to open /dev/netmap");
-		perror ("open");
-		return -1;
-	}
-
-	memset (&nmr, 0, sizeof (nmr));
-	nmr.nr_version = NETMAP_API;
-	strncpy (nmr.nr_name, ifname, IFNAMSIZ - 1);
-	if (ioctl (fd, NIOCGINFO, &nmr)) {
-		D ("unable to get interface info for %s", ifname);
-		return -1;
-	}
-
-	close (fd);
-
-	if (direct == NM_DIR_TX) 
-		return nmr.nr_tx_rings;
-
-	if (direct == NM_DIR_RX)
-		return nmr.nr_rx_rings;
-
-	return -1;
-}
-
-int
-nm_ring (char * ifname, int q, struct netmap_ring ** ring,  int x, int w)
-{
-	int fd;
-	char * mem;
-	struct nmreq nmr;
-	struct netmap_if * nifp;
-
-	/* open netmap for  ring */
-
-	fd = open ("/dev/netmap", O_RDWR);
-	if (fd < 0) {
-		D ("unable to open /dev/netmap");
-		return -1;
-	}
-
-	memset (&nmr, 0, sizeof (nmr));
-	strcpy (nmr.nr_name, ifname);
-	nmr.nr_version = NETMAP_API;
-	nmr.nr_ringid = (q | w);
-	nmr.nr_flags |= NR_REG_ALL_NIC;
-
-	if (ioctl (fd, NIOCREGIF, &nmr) < 0) {
-		D ("unable to register interface %s", ifname);
-		return -1;
-	}
-
-	mem = mmap (NULL, nmr.nr_memsize,
-		    PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0);
-	if (mem == MAP_FAILED) {
-		D ("unable to mmap");
-		return -1;
-	}
-
-	nifp = NETMAP_IF (mem, nmr.nr_offset);
-
-	if (x > 0)
-		*ring = NETMAP_TXRING (nifp, q);
-	else
-		*ring = NETMAP_RXRING (nifp, q);
-
-	return fd;
-}
-#define nm_hw_tx_ring(i, q, r) nm_ring (i, q, r, 1, NETMAP_HW_RING)
-#define nm_hw_rx_ring(i, q, r) nm_ring (i, q, r, 0, NETMAP_HW_RING)
-#define nm_sw_tx_ring(i, q, r) nm_ring (i, q, r, 1, NETMAP_SW_RING)
-#define nm_sw_rx_ring(i, q, r) nm_ring (i, q, r, 0, NETMAP_SW_RING)
-#define nm_vl_tx_ring(i, q, r) nm_ring (i, q, r, 1, 0)
-#define nm_vl_rx_ring(i, q, r) nm_ring (i, q, r, 0, 0)
-
-void
-usage (void) {
-	printf ("-l [LEFT] -r [RIGHT] -q [CPUNUM]\n");
+	ip->ip_sum = 0;
+	ip->ip_sum = ip_checksum((unsigned short *)ip, sizeof(struct ip));
 
 	return;
 }
 
+void process_nat_g2p(struct mapping *result, char *buf, int len){
+	struct ip *ip = (struct ip *)buf;
+        struct icmp *icmp;
+        struct tcphdr *tcp;
+        struct udphdr *udp;
 
+	ip->ip_dst = result->source_addr;
 
-int
-main (int argc, char ** argv)
-{
-	int q, rq, lq, n, ch;
-	char * rif, * lif;	/* right/left interfaces */
-	struct vnfapp *va[2];
+        if(ip->ip_p == IPPROTO_ICMP){
+                icmp = (struct icmp *)(buf + sizeof(struct ip));
+                icmp->icmp_id = result->source_port;
+		icmp->icmp_cksum = 0;
+		icmp->icmp_cksum = ip_checksum((unsigned short *)icmp,
+				len - sizeof(struct ip));
+        }else if(ip->ip_p == IPPROTO_TCP){
+                tcp = (struct tcphdr *)(buf + sizeof(struct ip));
+                tcp->dest = result->source_port;
+		tcp->check = 0;
+		tcp->check = ip4_transport_checksum(ip,
+				(unsigned short *)tcp, len - sizeof(struct ip));
+        }else if(ip->ip_p == IPPROTO_UDP){
+                udp = (struct udphdr *)(buf + sizeof(struct ip));
+                udp->dest = result->source_port;
+		udp->check = 0;
+		tcp->check = ip4_transport_checksum(ip,
+				(unsigned short *)udp, len - sizeof(struct ip));
+        }else{
+                return;
+        }
 
-	q = 256;	/* all CPUs */
-	rif = lif = NULL;
+	ip->ip_sum = 0;
+	ip->ip_sum = ip_checksum((unsigned short *)ip, sizeof(struct ip));
 
-	while ((ch = getopt (argc, argv, "r:l:q:")) != -1) {
-		switch (ch) {
-		case 'r' :
-			rif = optarg;
-			break;
-		case 'l' :
-			lif = optarg;
-			break;
-		case 'q' :
-			q = atoi (optarg);
-			break;
-		default :
-			usage ();
-			return -1;
-		}
-	}
-	
-	if (rif == NULL || lif == NULL) {
-		usage ();
-		return -1;
-	}
-
-	rq = nm_get_ring_num (rif, NM_DIR_RX);
-	lq = nm_get_ring_num (lif, NM_DIR_RX);
-
-	if (rq < 0 || lq < 0) {
-		D ("failed to get ring number");
-		return -1;
-	}
-	printf("rq=%d, lq=%d", rq, lq);
-
-	/* asign processing threads */
-
-	rq = (rq < q) ? rq : q;
-	lq = (lq < q) ? lq : q;
-	
-	/* start threads from right to left */
-	for (n = 0; n < rq; n++) {
-		struct vnfapp *va = vas[0];
-		va = (struct vnfapp *)malloc(sizeof (struct vnfapp));
-		memset (va, 0, sizeof (struct vnfapp));
-
-		va->rx_q = rq;
-		va->tx_q = n % lq;
-		va->rx_if = rif;
-		va->tx_if = lif;
-		va->rx_fd = nm_vl_rx_ring (rif, va->rx_q, &va->rx_ring);
-		va->tx_fd = nm_vl_tx_ring (lif, va->tx_q, &va->tx_ring);
-		va->direction = NETMAP_NAT_G2P;
-
-		pthread_create (&va->tid, NULL, process_netmap, va);
-	}
-
-	/* start threads from left to right */
-	for (n = 0; n < lq; n++) {
-		struct vnfapp *va = vas[1];
-		va = (struct vnfapp *) malloc (sizeof (struct vnfapp));
-		memset (va, 0, sizeof (struct vnfapp));
-
-		va->rx_q = lq;
-		va->tx_q = n % rq;
-		va->rx_if = lif;
-		va->tx_if = rif;
-		va->rx_fd = nm_vl_rx_ring (lif, va->rx_q, &va->rx_ring);
-		va->tx_fd = nm_vl_tx_ring (rif, va->tx_q, &va->tx_ring);
-		va->direction = NETMAP_NAT_P2G;
-
-		pthread_create (&va->tid, NULL, process_netmap, va);
-	}
-
-	pthread_join(vas[0]->tid, NULL);
-	pthread_join(vas[1]->tid, NULL);
-	
-	return 0;
+	return;
 }
 
+static unsigned short ip4_transport_checksum(struct ip *ip,
+	unsigned short *payload, int payloadsize)
+{
+        unsigned long sum = 0;
 
+        struct pseudo_ipv4_header p;
+        unsigned short *f = (unsigned short *)&p;
+        int pseudo_size = sizeof(p);
+
+        memset(&p, 0, sizeof(struct pseudo_ipv4_header));
+        p.src_address = ip->ip_src;
+        p.dst_address = ip->ip_dst;
+        p.ip_p_nxt = ip->ip_p;
+	p.ip_p_len = htons(payloadsize);
+
+        while (pseudo_size > 1) {
+                sum += *f;
+                f++;
+                pseudo_size -= 2;
+        }
+
+        while (payloadsize > 1) {
+                sum += *payload;
+                payload++;
+                payloadsize -= 2;
+        }
+
+        if (payloadsize == 1) {
+		sum += htons(*(unsigned char *)payload << 8);
+        }
+
+        sum = (sum & 0xffff) + (sum >> 16);
+        sum = (sum & 0xffff) + (sum >> 16);
+
+        return ~sum;
+}
+
+static unsigned short ip_checksum(unsigned short *buf, int size){
+        unsigned long sum = 0;
+
+        while (size > 1) {
+                sum += *buf++;
+                size -= 2;
+        }
+        if(size){
+		sum += htons(*(unsigned char *)buf << 8);
+	}
+
+        sum  = (sum & 0xffff) + (sum >> 16);    /* add overflow counts */
+        sum  = (sum & 0xffff) + (sum >> 16);    /* once again */
+
+        return ~sum;
+}
 
