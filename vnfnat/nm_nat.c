@@ -1,18 +1,17 @@
 #include <stdio.h>
-
-#define NETMAP_WITH_LIBS
-#include <net/netmap_user.h>
-
-#include <ctype.h>      // isprint()
-#include <unistd.h>     // sysconf()
+#include <unistd.h>
 #include <sys/poll.h>
-#include <arpa/inet.h>  /* ntohs */
-#include <sys/sysctl.h> /* sysctl */
-#include <ifaddrs.h>    /* getifaddrs */
+#include <arpa/inet.h>
+#include <sys/sysctl.h>
 #include <net/ethernet.h>
 #include <netinet/in.h>
 #include <netinet/ip.h>
 #include <pthread.h>
+
+#define NETMAP_WITH_LIBS
+#include <net/netmap_user.h>
+
+#include "nm_nat.h"
 
 struct vnfapp {
 	pthread_t tid;
