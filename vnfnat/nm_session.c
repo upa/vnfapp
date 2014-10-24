@@ -10,15 +10,15 @@
 #include <arpa/inet.h>
 #include <syslog.h>
 
-#include "main.h"
-#include "session.h"
-
+#include "nm_session.h"
 
 static uint32_t create_table_key(void *address, uint16_t port);
 static int add_mapping_to_hash(struct mapping *result);
 static void delete_mapping_from_hash(struct mapping *result);
-static struct in_addr select_mapped_addr(void *source_addr, uint16_t source_port);
-static uint16_t select_restricted_port(struct in_addr mapped_addr, void *source_addr, uint16_t source_port);
+static struct in_addr select_mapped_addr(void *source_addr,
+	uint16_t source_port);
+static uint16_t select_restricted_port(struct in_addr mapped_addr,
+	void *source_addr, uint16_t source_port);
 
 
 static uint32_t create_table_key(void *address, uint16_t port){
@@ -41,9 +41,14 @@ struct mapping *init_mapping_table(){
 }
 
 static int add_mapping_to_hash(struct mapping *result){
-	uint32_t outer_key = create_table_key(&(result->mapped_addr), result->mapped_port);
-	uint32_t inner_key = create_table_key(&(result->source_addr), result->source_port);
+	uint32_t outer_key;
+	uint32_t inner_key;
 	int count;
+
+	outer_key = create_table_key(&(result->mapped_addr),
+			result->mapped_port);
+	inner_key = create_table_key(&(result->source_addr),
+			result->source_port);
 
 	count = 0;
 	while(outer_table[outer_key] != NULL){
@@ -79,8 +84,13 @@ static int add_mapping_to_hash(struct mapping *result){
 }
 
 static void delete_mapping_from_hash(struct mapping *result){
-        uint32_t outer_key = create_table_key(&(result->mapped_addr), result->mapped_port);
-        uint32_t inner_key = create_table_key(&(result->source_addr), result->source_port);
+        uint32_t outer_key;
+        uint32_t inner_key;
+
+	outer_key = create_table_key(&(result->mapped_addr),
+		result->mapped_port);
+	inner_key = create_table_key(&(result->source_addr),
+		result->source_port);
 
 	while(1){
 		if(outer_table[outer_key] != NULL){
@@ -117,7 +127,9 @@ static void delete_mapping_from_hash(struct mapping *result){
         return;
 }
 
-struct mapping *search_mapping_table_outer(struct in_addr mapped_addr, uint16_t mapped_port){
+struct mapping *search_mapping_table_outer(struct in_addr mapped_addr,
+	uint16_t mapped_port)
+{
         uint32_t key = create_table_key(&mapped_addr, mapped_port);
         int count = 0;
 
@@ -140,7 +152,9 @@ struct mapping *search_mapping_table_outer(struct in_addr mapped_addr, uint16_t 
 
 }
 
-struct mapping *search_mapping_table_inner(struct in_addr source_addr, uint16_t source_port){
+struct mapping *search_mapping_table_inner(struct in_addr source_addr,
+	uint16_t source_port)
+{
         uint32_t key = create_table_key(&source_addr, source_port);
         int count = 0;
 
@@ -163,7 +177,9 @@ struct mapping *search_mapping_table_inner(struct in_addr source_addr, uint16_t 
 
 }
 
-static struct in_addr select_mapped_addr(void *source_addr, uint16_t source_port){
+static struct in_addr select_mapped_addr(void *source_addr,
+	uint16_t source_port)
+{
         struct in_addr *ip = (struct in_addr *)source_addr;
 	struct in_addr result = config.v4_rule_addr;
 	uint32_t v4_suffix = config.ea;
@@ -184,7 +200,9 @@ static struct in_addr select_mapped_addr(void *source_addr, uint16_t source_port
         return result;
 }
 
-static uint16_t select_restricted_port(struct in_addr mapped_addr, void *source_addr, uint16_t source_port){
+static uint16_t select_restricted_port(struct in_addr mapped_addr,
+	void *source_addr, uint16_t source_port)
+{
 	struct mapping *ptr = (struct mapping *)mapping_table;
 	struct in_addr *ip = (struct in_addr *)source_addr;
 	uint16_t psid = (uint16_t)(config.ea);
@@ -224,8 +242,10 @@ int insert_new_mapping(struct mapping *result){
         char log_source[256];
         char log_mapped[256];
 
-	mapped_addr = select_mapped_addr(&(result->source_addr), result->source_port);
-	mapped_port = select_restricted_port(mapped_addr, &(result->source_addr), result->source_port);
+	mapped_addr = select_mapped_addr(&(result->source_addr),
+				result->source_port);
+	mapped_port = select_restricted_port(mapped_addr,
+				&(result->source_addr), result->source_port);
 
 	if(mapped_port != 0){
 		result->mapped_addr = mapped_addr;
@@ -277,7 +297,8 @@ void count_down_ttl(){
 			inet_ntop(AF_INET, &(tmp->source_addr), log_source, sizeof(log_source));
 			inet_ntop(AF_INET, &(tmp->mapped_addr), log_mapped, sizeof(log_mapped));
 			syslog_write(LOG_INFO, "session deleted: %s:%d <-> %s:%d",
-				log_source, ntohs(tmp->source_port), log_mapped, ntohs(tmp->mapped_port));
+				log_source, ntohs(tmp->source_port),
+				log_mapped, ntohs(tmp->mapped_port));
 			free(tmp);
 			continue;
 		}
@@ -285,5 +306,7 @@ void count_down_ttl(){
 		prev = ptr;
 		ptr = ptr->next;
 	}
+
+	return;
 }
 

@@ -12,25 +12,26 @@
 #include <net/netmap_user.h>
 
 #include "nm_main.h"
+#include "nm_nat.h"
+#include "nm_session.h"
 
-struct vnfapp {
-	pthread_t tid;
+struct mapping **inner_table;
+struct mapping **outer_table;
+struct mapping *mapping_table;
+int syslog_facility = SYSLOG_FACILITY;
 
-	int rx_fd, tx_fd;
-	int rx_q, tx_q;
-	char *rx_if, *tx_if;
-	struct netmap_ring *rx_ring, *tx_ring;
-	unsigned int direction;
-
-	void *data;
-};
+static void syslog_open();
+static void syslog_close();
 
 void nm_receive(struct vnfapp *va)
 {
 	unsigned int budget, rx_cur, tx_cur;
 	struct netmap_slot *rx_slot, *tx_slot;
 	uint32_t temp_idx;
-	int ret;
+	void *buf, *buf_ip;
+	struct ether_header *eth;
+	struct ip *ip
+	int len_ip, ret;
 
 	rx_cur = va->rx_ring->cur;
 	tx_cur = va->tx_ring->cur;
@@ -45,18 +46,26 @@ void nm_receive(struct vnfapp *va)
 				rx_cur, rx_slot->buf_idx, tx_cur, tx_slot->buf_idx);
 		}
 
+		buf = NETMAP_BUF(va->rx_ring, rx_cur);
+		eth = (struct ether_header *)buf;
+		if(eth->ether_type != ETH_P_IP)
+			goto packet_drop;
+
 		/* NAT related process */
+		buf_ip = (struct ip *)(buf + sizeof(struct ether_header));
+		len_ip = rx_slot->len - sizeof(struct ether_header);
+		
 		switch(va->direction){
 		case NM_THREAD_R2L:
-			ret = process_right_to_left();
+			ret = process_right_to_left(buf_ip, len_ip);
 			break;
 		case NM_THREAD_L2R:
-			ret = process_left_to_right();
+			ret = process_left_to_right(buf_ip, len_ip);
 			break;
 		default:
 		}
 
-		/* likely NATed session is not found */
+		/* maybe NATed session is not found */
 		if(!ret)
 			goto packet_drop;
 
@@ -198,7 +207,6 @@ main (int argc, char ** argv)
 {
 	int q, rq, lq, n, ch;
 	char * rif, * lif;	/* right/left interfaces */
-	struct vnfapp *va[2];
 
 	q = 256;	/* all CPUs */
 	rif = lif = NULL;
@@ -225,11 +233,13 @@ main (int argc, char ** argv)
 		return -1;
 	}
 
+	mapping_table = init_mapping_table();
+
 	rq = nm_get_ring_num (rif, NM_DIR_RX);
 	lq = nm_get_ring_num (lif, NM_DIR_RX);
 
 	if (rq < 0 || lq < 0) {
-		D ("failed to get ring number");
+		printf("failed to get ring number");
 		return -1;
 	}
 	printf("rq=%d, lq=%d", rq, lq);
@@ -241,8 +251,7 @@ main (int argc, char ** argv)
 	
 	/* start threads from right to left */
 	for (n = 0; n < rq; n++) {
-		struct vnfapp *va = vas[0];
-		va = (struct vnfapp *)malloc(sizeof (struct vnfapp));
+		struct vnfapp *va = (struct vnfapp *)malloc(sizeof (struct vnfapp));
 		memset (va, 0, sizeof (struct vnfapp));
 
 		va->rx_q = rq;
@@ -258,8 +267,7 @@ main (int argc, char ** argv)
 
 	/* start threads from left to right */
 	for (n = 0; n < lq; n++) {
-		struct vnfapp *va = vas[1];
-		va = (struct vnfapp *) malloc (sizeof (struct vnfapp));
+		struct vnfapp *va = (struct vnfapp *) malloc (sizeof (struct vnfapp));
 		memset (va, 0, sizeof (struct vnfapp));
 
 		va->rx_q = lq;
@@ -273,11 +281,29 @@ main (int argc, char ** argv)
 		pthread_create (&va->tid, NULL, process_netmap, va);
 	}
 
-	pthread_join(vas[0]->tid, NULL);
-	pthread_join(vas[1]->tid, NULL);
+	while(1){
+		sleep(SESSION_CHECK_INTERVAL);
+		count_down_ttl();
+	}
 	
 	return 0;
 }
 
+void syslog_write(int level, char *fmt, ...){
+        va_list args;
+        va_start(args, fmt);
 
+        syslog_open();
+        vsyslog(level, fmt, args);
+        syslog_close();
 
+        va_end(args);
+}
+
+static void syslog_open(){
+    openlog(PROCESS_NAME, LOG_CONS | LOG_PID, syslog_facility);
+}
+
+static void syslog_close(){
+    closelog();
+}

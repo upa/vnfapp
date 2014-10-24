@@ -16,30 +16,32 @@
 #include <linux/if_tun.h>
 #include <syslog.h>
 
-#include "main.h"
-#include "session.h"
-#include "encapsulate.h"
-#include "nat.h"
+#include "nm_main.h"
+#include "nm_nat.h"
+#include "nm_session.h"
 
 static unsigned short ip4_transport_checksum(struct ip *ip,
 			unsigned short *payload, int payloadsize);
 static unsigned short ip_checksum(unsigned short *buf, int size);
 
-void process_right_to_left(){
-	if((result =
-		search_mapping_table_outer(ip->ip_dst, dest_port)) != NULL){
-		reset_ttl(result);
-		process_nat_g2p(result,
-			buf + sizeof(struct ip6_hdr), len - sizeof(struct ip6_hdr));
-	}
+int process_right_to_left(void *buf, unsigned int len){
+	struct mapping *result;
+
+	result = search_mapping_table_outer(ip->ip_dst, dest_port);
+	if(result == NULL)
+		return -1;
+
+	reset_ttl(result);
+	process_nat_g2p(result, buf, len);
+
+	return 0;
 }
 
-void process_left_to_right(){
-	if((result =
-		search_mapping_table_inner(ip->ip_src, source_port)) != NULL){
-		reset_ttl(result);
-		process_nat_ptog(result, buf, len);
-	}else{
+int process_left_to_right(void *buf, unsigned int len){
+	struct mapping *result;
+	result = search_mapping_table_inner(ip->ip_src, source_port)
+
+	if(result == NULL){
 		result = (struct mapping *)malloc(sizeof(struct mapping));
 		memset(result, 0, sizeof(struct mapping));
 
@@ -51,7 +53,12 @@ void process_left_to_right(){
 		}
 
 		process_nat_p2g(result, buf, len);
+	}else{
+		reset_ttl(result);
+		process_nat_p2g(result, buf, len);
 	}
+
+	return 0;
 }
 
 void process_nat_p2g(struct mapping *result, char *buf, int len){
