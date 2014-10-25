@@ -31,6 +31,7 @@
 #define POLL_TIMEOUT	10
 #define BURST_MAX	1024
 
+int vale_rings = 0;
 int verbose;
 patricia_tree_t * udp_tree;
 patricia_tree_t * tcp_tree;
@@ -358,6 +359,12 @@ nm_get_ring_num (char * ifname, int direct)
 	memset (&nmr, 0, sizeof (nmr));
 	nmr.nr_version = NETMAP_API;
 	strncpy (nmr.nr_name, ifname, IFNAMSIZ - 1);
+
+        if (vale_rings && strncmp (ifname, "vale", 4) == 0) {
+                nmr.nr_rx_rings = vale_rings;
+                nmr.nr_tx_rings = vale_rings;
+        }
+
 	if (ioctl (fd, NIOCGINFO, &nmr)) {
 		D ("unable to get interface info for %s", ifname);
 		return -1;
@@ -405,6 +412,11 @@ nm_ring (char * ifname, int q, struct netmap_ring ** ring,  int x, int w)
 		return -1;
 	}
 
+        if (vale_rings && strncmp (ifname, "vale", 4) == 0) {
+                nmr.nr_rx_rings = vale_rings;
+                nmr.nr_tx_rings = vale_rings;
+        }
+
 	mem = mmap (NULL, nmr.nr_memsize,
 		    PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0);
 	if (mem == MAP_FAILED) {
@@ -433,6 +445,7 @@ usage (void) {
 	printf ("-l [LEFT] -r [RIGHT] -q [CPUNUM] (-v)\n"
 		"-L [LEFTOUTMAC] -R[RIGHTOUTMAC]\n"
 		"-a [PROTO_PREFIX/LEN:PORT-PREFIX/LEN:PORT] -a ... -a ...\n"
+		"-e [VALERINGNUM]\n"
 		"\n"
 		"port number 0 means all\n"
 		);
@@ -464,7 +477,7 @@ main (int argc, char ** argv)
 
 	memset (&vi, 0, sizeof (vi));
 
-	while ((ch = getopt (argc, argv, "r:l:q:R:L:a:")) != -1) {
+	while ((ch = getopt (argc, argv, "r:l:q:R:L:a:e:")) != -1) {
 		switch (ch) {
 		case 'r' :
 			rif = optarg;
@@ -541,6 +554,13 @@ main (int argc, char ** argv)
 
 			break;
 			
+		case 'e' :
+			vale_rings = atoi (optarg);
+			if (vale_rings > 4) {
+				D ("vale ring should be smaller than 4");
+				return -1;
+			}
+			break;
 		default :
 			usage ();
 			return -1;

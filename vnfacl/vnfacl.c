@@ -27,8 +27,8 @@
 #define POLL_TIMEOUT	10
 #define BURST_MAX	1024
 
-#define VALE_RINGS	4
 
+int vale_rings = 0;
 int verbose;
 patricia_tree_t * tree;
 
@@ -308,9 +308,9 @@ nm_get_ring_num (char * ifname, int direct)
 	nmr.nr_version = NETMAP_API;
 	strncpy (nmr.nr_name, ifname, IFNAMSIZ - 1);
 
-        if (VALE_RINGS && strncmp (ifname, "vale", 4) == 0) {
-                nmr.nr_rx_rings = VALE_RINGS;
-                nmr.nr_tx_rings = VALE_RINGS;
+        if (vale_rings && strncmp (ifname, "vale", 4) == 0) {
+                nmr.nr_rx_rings = vale_rings;
+                nmr.nr_tx_rings = vale_rings;
         }
 
 	if (ioctl (fd, NIOCGINFO, &nmr)) {
@@ -355,9 +355,9 @@ nm_ring (char * ifname, int q, struct netmap_ring ** ring,  int x, int w)
 	else 
 		nmr.nr_flags |= NR_REG_ALL_NIC;
 
-        if (VALE_RINGS && strncmp (ifname, "vale", 4) == 0) {
-                nmr.nr_rx_rings = VALE_RINGS;
-                nmr.nr_tx_rings = VALE_RINGS;
+        if (vale_rings && strncmp (ifname, "vale", 4) == 0) {
+                nmr.nr_rx_rings = vale_rings;
+                nmr.nr_tx_rings = vale_rings;
         }
 
 	if (ioctl (fd, NIOCREGIF, &nmr) < 0) {
@@ -393,6 +393,7 @@ usage (void) {
 	printf ("-l [LEFT] -r [RIGHT] -q [CPUNUM] (-v)\n");
 	printf ("-L [LEFTOUTMAC] -R[RIGHTOUTMAC]\n");
 	printf ("-a [PREFIX/LEN] -a ... -a ...\n");
+	printf ("-e [VALERINGNUM]\n");
 
 	return;
 }
@@ -416,7 +417,7 @@ main (int argc, char ** argv)
 
 	memset (&vi, 0, sizeof (vi));
 
-	while ((ch = getopt (argc, argv, "r:l:q:R:L:a:")) != -1) {
+	while ((ch = getopt (argc, argv, "r:l:q:R:L:a:e:")) != -1) {
 		switch (ch) {
 		case 'r' :
 			rif = optarg;
@@ -451,7 +452,13 @@ main (int argc, char ** argv)
 			}
 			add_patricia_entry (tree, &acladdr, len, main);
 			break;
-			
+                case 'e' :
+                        vale_rings = atoi (optarg);
+                        if (vale_rings > 4) {
+                                D ("vale ring should be smaller than 4");
+                                return -1;
+                        }
+                        break;			
 		default :
 			usage ();
 			return -1;
