@@ -158,6 +158,41 @@ add_patricia_entry (patricia_tree_t * tree, void * addr, u_int16_t len,
 }
 
 
+/* from netmap pkt-gen.c */
+
+static uint16_t
+checksum(const void * data, uint16_t len, uint32_t sum)
+{
+	const uint8_t *addr = data;
+	uint32_t i;
+
+	/* Checksum all the pairs of bytes first... */
+	for (i = 0; i < (len & ~1U); i += 2) {
+		sum += (u_int16_t)ntohs(*((u_int16_t *)(addr + i)));
+		if (sum > 0xFFFF)
+			sum -= 0xFFFF;
+	}
+	/*
+	 * If there's a single byte left over, checksum it, too.
+	 * Network byte order is big-endian, so the remaining byte is
+	 * the high byte.
+	 */
+
+	if (i < len) {
+		sum += addr[i] << 8;
+		if (sum > 0xFFFF)
+			sum -= 0xFFFF;
+	}
+
+	return sum;
+}
+
+static u_int16_t
+wrapsum(u_int32_t sum)
+{
+	sum = ~sum & 0xFFFF;
+	return (htons(sum));
+}
 
 
 u_int
@@ -217,6 +252,10 @@ move (struct vnfapp * va)
 			goto drop;
 		}
 		ip->ip_ttl--;
+
+		/* update checksum */
+		ip->ip_sum = 0;
+		ip->ip_sum = wrapsum (checksum (ip, ip->ip_hl * 4, 0));
 
 		
 		/* change destination mac */
