@@ -212,6 +212,12 @@ move (struct vnfapp * va)
 			goto drop;
 		}
 
+		/* decrease ttl */
+		if (ip->ip_ttl < 2) {
+			goto drop;
+		}
+		ip->ip_ttl--;
+
 		
 		/* change destination mac */
 #ifdef ZEROCPY
